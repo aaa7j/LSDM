@@ -1,0 +1,154 @@
+erDiagram
+    GLOBAL_PLAYER {
+        int    player_id PK
+        string first_name
+        string last_name
+        string full_name
+        string position
+        string height
+        string weight
+        date   birth_date
+        string nationality
+        string college
+        int    experience
+        int    team_id FK
+        int    jersey_number
+    }
+
+    GLOBAL_TEAM {
+        int    team_id PK
+        string team_name
+        string city
+        string state
+        string arena
+        int    founded_year
+        int    championships_won
+        string coach
+        string team_colors
+        string conference
+        string division
+    }
+
+    GLOBAL_GAME {
+        int    game_id PK
+        date   game_date
+        int    home_team_id FK
+        int    away_team_id FK
+        string location
+        int    attendance
+        string game_duration
+        int    final_score_home
+        int    final_score_away
+        boolean overtime_flag
+        int    period_count
+    }
+
+    GLOBAL_PLAY_BY_PLAY {
+        int    game_id FK
+        int    eventnum
+        int    eventmsgtype
+        int    eventmsgactiontype
+        int    period
+        string wctimestring
+        string pctimestring
+        string homedescription
+        string neutraldescription
+        string visitordescription
+        string score
+        string scoremargin
+        int    person1type
+        int    player1_id FK
+        string player1_name
+        int    player1_team_id FK
+        string player1_team_city
+        string player1_team_nickname
+        string player1_team_abbreviation
+        int    person2type
+        int    player2_id FK
+        string player2_name
+        int    player2_team_id FK
+        string player2_team_city
+        string player2_team_nickname
+        string player2_team_abbreviation
+        int    person3type
+        int    player3_id FK
+        string player3_name
+        int    player3_team_id FK
+        string player3_team_city
+        string player3_team_nickname
+        string player3_team_abbreviation
+        boolean video_available_flag
+    }
+
+    GLOBAL_LINE_SCORE {
+        int game_id FK
+        int team_id FK
+        int period
+        int points
+    }
+
+    GLOBAL_OTHER_STATS {
+        int game_id FK
+        int team_id FK
+        int points
+        int rebounds
+        int assists
+        int steals
+        int blocks
+        int turnovers
+        int fouls
+    }
+
+    GLOBAL_DRAFT_COMBINE {
+        int   player_id FK
+        int   year
+        float height_measurement
+        float weight_measurement
+        float wingspan
+        float vertical_jump
+        int   bench_press_reps
+        float shuttle_run_time
+    }
+
+    GLOBAL_DRAFT_HISTORY {
+        int player_id FK
+        int team_id FK
+        int draft_year
+        int draft_round
+        int draft_pick
+        int overall_pick
+    }
+
+    GLOBAL_OFFICIAL {
+        int    official_id PK
+        string official_name
+        int    experience
+    }
+
+    GLOBAL_GAME_OFFICIAL {
+        int    game_id FK
+        int    official_id FK
+        string role
+    }
+
+    %% Relationships
+    GLOBAL_PLAYER }o--|| GLOBAL_TEAM : "current member of"
+    GLOBAL_GAME ||--|| GLOBAL_TEAM : "home team"
+    GLOBAL_GAME ||--|| GLOBAL_TEAM : "away team"
+
+    GLOBAL_GAME ||--o{ GLOBAL_PLAY_BY_PLAY : "has events"
+    GLOBAL_PLAYER ||--o{ GLOBAL_PLAY_BY_PLAY : "involved"
+    GLOBAL_TEAM   ||--o{ GLOBAL_PLAY_BY_PLAY : "team context"
+
+    GLOBAL_GAME ||--o{ GLOBAL_LINE_SCORE : "has line score"
+    GLOBAL_TEAM ||--o{ GLOBAL_LINE_SCORE : "scored in"
+
+    GLOBAL_GAME ||--o{ GLOBAL_OTHER_STATS : "team stats"
+    GLOBAL_TEAM ||--o{ GLOBAL_OTHER_STATS : "team stats"
+
+    GLOBAL_PLAYER ||--o{ GLOBAL_DRAFT_COMBINE : "combine measures"
+    GLOBAL_PLAYER ||--o{ GLOBAL_DRAFT_HISTORY : "drafted in"
+    GLOBAL_TEAM   ||--o{ GLOBAL_DRAFT_HISTORY : "drafted by"
+
+    GLOBAL_OFFICIAL ||--o{ GLOBAL_GAME_OFFICIAL : "assigned to"
+    GLOBAL_GAME     ||--o{ GLOBAL_GAME_OFFICIAL : "has officials"
