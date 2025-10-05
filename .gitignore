@@ -1,0 +1,30 @@
+# === DATA (non versionare) ===
+data/
+warehouse/
+spark-warehouse/
+.derby/
+*.csv
+*.tsv
+*.json
+*.jsonl
+*.parquet
+*.orc
+*.zip
+*.gz
+*.bz2
+
+# === Python ===
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# === Logs / cache ===
+*.log
+*.tmp
+.cache/
+.ipynb_checkpoints/
+
+# === OS ===
+.DS_Store
+Thumbs.db
