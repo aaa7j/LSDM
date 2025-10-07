@@ -78,7 +78,7 @@ def main():
 
     # Import here so env vars are in place before FastAPI module init
     # Import the service that initializes Spark on startup
-    from scripts.search_service_fast import app  # noqa: WPS433
+    from scripts.search_service import app  # noqa: WPS433
 
     # One worker => one JVM/Spark session kept alive
     # Startup diagnostics

@@ -1,0 +1,120 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NBA Search</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --card: #121821;
+        --fg: #e9eef5;
+        --muted: #9db0c7;
+        --accent: #3ea6ff;
+        --border: #223044;
+      }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, Arial, sans-serif; }
+      .wrap { max-width: 900px; margin: 32px auto; padding: 0 16px; }
+      h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; color: var(--fg); }
+      .search-box { display: flex; gap: 8px; }
+      input[type="text"] { flex: 1; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); color: var(--fg); border-radius: 6px; }
+      button { padding: 10px 14px; background: var(--accent); color: #00111f; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; }
+      button:disabled { opacity: .6; cursor: default; }
+      .meta { margin-top: 10px; color: var(--muted); font-size: 12px; }
+      .results { margin-top: 20px; display: grid; gap: 8px; }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; align-items: center; gap: 12px; }
+      .badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+      .title { font-weight: 600; }
+      .sub { color: var(--muted); }
+      .extra { font-size: 12px; color: var(--muted); }
+      .error { color: #ff6b6b; margin-top: 10px; }
+      footer { margin: 32px 0; color: var(--muted); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>NBA Search (players â€¢ teams â€¢ games)</h1>\n      <div class="meta"><a href="/predict-ui">Predict Outcome →</a></div>
+      <form id="f" class="search-box">
+        <input id="q" type="text" placeholder="e.g. Michael Jordan, Lakers 2010, 2016-06-19" autocomplete="off" />
+        <button id="btn" type="submit">Search</button>
+      </form>
+      <div class="meta" id="meta"></div>
+      <div class="error" id="err"></div>
+      <div class="results" id="results"></div>
+      <footer>
+        Minimal demo UI. Results powered by the local FastAPI service.
+      </footer>
+    </div>
+    <script>
+      const f = document.getElementById('f');
+      const q = document.getElementById('q');
+      const btn = document.getElementById('btn');
+      const meta = document.getElementById('meta');
+      const err = document.getElementById('err');
+      const results = document.getElementById('results');
+
+      function renderItems(items) {
+        results.innerHTML = '';
+        if (!items || items.length === 0) {
+          results.innerHTML = '<div class="sub">No results.</div>';
+          return;
+        }
+        for (const it of items) {
+          const div = document.createElement('div');
+          div.className = 'card';
+          const badge = document.createElement('span');
+          badge.className = 'badge';
+          badge.textContent = it._entity || '-';
+          const box = document.createElement('div');
+          const title = document.createElement('div');
+          title.className = 'title';
+          title.textContent = it._title || it._id;
+          const sub = document.createElement('div');
+          sub.className = 'sub';
+          sub.textContent = it._subtitle || '';
+          const extra = document.createElement('div');
+          extra.className = 'extra';
+          extra.textContent = it._extra || '';
+          box.appendChild(title);
+          if (sub.textContent) box.appendChild(sub);
+          if (extra.textContent) box.appendChild(extra);
+          div.appendChild(badge);
+          div.appendChild(box);
+          results.appendChild(div);
+        }
+      }
+
+      async function doSearch(text) {
+        err.textContent = '';
+        meta.textContent = 'Searchingâ€¦';
+        results.innerHTML = '';
+        btn.disabled = true;
+        try {
+          const url = `/search?q=${encodeURIComponent(text)}&limit=50`;
+          const res = await fetch(url, { headers: { 'accept': 'application/json' } });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          meta.textContent = `Query: ${data?.meta?.query || text}  â€¢  Results: ${data?.total ?? data?.items?.length ?? 0}`;
+          renderItems(data.items || []);
+        } catch (e) {
+          console.error(e);
+          err.textContent = `Error: ${e.message || e}`;
+          meta.textContent = '';
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      f.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        const text = (q.value || '').trim();
+        if (!text) return;
+        doSearch(text);
+      });
+
+      // autofocus for convenience
+      q.focus();
+    </script>
+  </body>
+  </html>
+

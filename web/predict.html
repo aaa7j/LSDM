@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Predict Game Outcome</title>
+    <style>
+      :root {
+        --bg: #0b0f14;
+        --card: #121821;
+        --fg: #e9eef5;
+        --muted: #9db0c7;
+        --accent: #3ea6ff;
+        --border: #223044;
+        --win: #72f0a9;
+        --loss: #ff8a8a;
+      }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, Arial, sans-serif; }
+      .wrap { max-width: 900px; margin: 32px auto; padding: 0 16px; }
+      h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
+      a { color: var(--accent); text-decoration: none; }
+      .box { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+      input[type="text"], input[type="date"] { width: 100%; padding: 10px 12px; background: #0e141c; border: 1px solid var(--border); color: var(--fg); border-radius: 6px; }
+      .controls { display: flex; gap: 10px; align-items: end; margin-top: 12px; }
+      button { padding: 10px 14px; background: var(--accent); color: #00111f; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; }
+      button:disabled { opacity: .6; cursor: default; }
+      .meta { margin-top: 10px; color: var(--muted); font-size: 12px; }
+      .error { color: #ff6b6b; margin-top: 10px; }
+      .result { margin-top: 16px; display: grid; gap: 8px; }
+      .winner { font-size: 18px; font-weight: 700; }
+      .prob { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      footer { margin: 20px 0; color: var(--muted); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Predict Game Outcome</h1>
+      <div class="meta"><a href="/">← Back to Search</a></div>
+      <div class="box">
+        <div class="row">
+          <div>
+            <label for="home">Home team (id or name)</label>
+            <input id="home" type="text" placeholder="e.g. Lakers or 1610612747" />
+          </div>
+          <div>
+            <label for="away">Away team (id or name)</label>
+            <input id="away" type="text" placeholder="e.g. Celtics or 1610612738" />
+          </div>
+        </div>
+        <div class="controls">
+          <div style="flex:1">
+            <label for="date">Cutoff date (optional)</label>
+            <input id="date" type="date" />
+          </div>
+          <div>
+            <button id="btn">Predict</button>
+          </div>
+        </div>
+        <div class="error" id="err"></div>
+        <div class="result" id="res"></div>
+      </div>
+      <footer>
+        Uses last-year rolling form with home advantage.
+      </footer>
+    </div>
+    <script>
+      const home = document.getElementById('home');
+      const away = document.getElementById('away');
+      const date = document.getElementById('date');
+      const btn = document.getElementById('btn');
+      const err = document.getElementById('err');
+      const res = document.getElementById('res');
+
+      async function predict() {
+        err.textContent = '';
+        res.innerHTML = '';
+        const h = (home.value || '').trim();
+        const a = (away.value || '').trim();
+        const d = (date.value || '').trim();
+        if (!h || !a) { err.textContent = 'Please enter both teams.'; return; }
+        btn.disabled = true;
+        try {
+          const qs = new URLSearchParams({ home: h, away: a });
+          if (d) qs.set('date', d);
+          const r = await fetch('/predict?' + qs.toString(), { headers: { 'accept': 'application/json' } });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const data = await r.json();
+          if (data.error) { err.textContent = data.error; return; }
+          const w = document.createElement('div');
+          w.className = 'winner';
+          const homeName = data.home || 'Home';
+          const awayName = data.away || 'Away';
+          const pH = Math.round((data.p_home_win ?? 0) * 1000) / 10;
+          const pA = Math.round((data.p_away_win ?? 0) * 1000) / 10;
+          w.textContent = (data.winner === 'home' ? 'Winner: ' + homeName : 'Winner: ' + awayName);
+          const p = document.createElement('div');
+          p.className = 'prob';
+          p.textContent = `${homeName} ${pH}%  •  ${awayName} ${pA}%`;
+          const meta = document.createElement('div');
+          meta.className = 'meta';
+          const feature = data.feature || 'expected_diff';
+          const years = (data.years ?? data.train_years ?? 'n/a');
+          const cutoff = data.cutoff || 'auto';
+          meta.textContent = `feature=${feature} • train_years=${years} • cutoff=${cutoff}`;
+          res.appendChild(w);
+          res.appendChild(p);
+          res.appendChild(meta);
+        } catch (e) {
+          err.textContent = (e && e.message) ? e.message : String(e);
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      btn.addEventListener('click', predict);
+      home.focus();
+    </script>
+  </body>
+  </html>

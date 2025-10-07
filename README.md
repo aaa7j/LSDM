@@ -69,7 +69,16 @@ Flags:
 - `--metrics-out` – directory to persist player metrics (`--metrics-format` controls Parquet/CSV)
 - `--model-dir` – path to save the PySpark PipelineModel
 - `--predictions-out` – optional Parquet dump of test-set predictions
-- `--reg-param`, `--elastic-net` – logistic regression hyperparameters
+- `--reg-param`, `--elastic-net` — logistic regression hyperparameters
+
+Alternatively, if you already saved the GLOBAL_* views to Parquet (`warehouse/`), you can run the analytics directly from the warehouse without CSVs:
+
+```bash
+python scripts/run_models.py --warehouse warehouse \
+  --metrics-out analytics/player-metrics \
+  --model-dir models/home-win \
+  --predictions-out analytics/predictions
+```
 
 ## Dashboard
 
@@ -98,3 +107,30 @@ Refer to `ER.mmd` (Mermaid source) and the generated `Global-Schema.png` for the
 - Add team trends dashboards (rolling offensive/defensive ratings)
 - Integrate predictive pipelines with MLflow for experiment tracking
 - Deploy the dashboard with scheduled refreshes against cloud storage
+
+## Search Service
+
+Run a lightweight FastAPI service that keeps a single long‑lived PySpark session for fast queries (players/teams/games combined):
+
+1) Install requirements:
+
+```
+pip install -r requirements.txt
+```
+
+2) Start the service (Windows‑friendly runner):
+
+```
+python scripts/run_search_service.py --warehouse warehouse --host 127.0.0.1 --port 8000
+```
+
+3) Endpoints:
+- Health: `http://127.0.0.1:8000/health`
+- Search: `http://127.0.0.1:8000/search?q=michael%20jordan&limit=25`
+
+4) Minimal Web UI:
+- Open `http://127.0.0.1:8000/` in your browser for a basic search page.
+
+Notes:
+- The service reads Parquet snapshots from the `warehouse/` folder (create them with `scripts/run_gav.py --save warehouse`).
+- On Windows ensure a JDK is installed; you can pass `--java-home "C:\\Path\\To\\JDK"` to the runner if needed.
