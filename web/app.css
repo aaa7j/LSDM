@@ -1,0 +1,61 @@
+:root {
+  --bg: #0b0f14;
+  --bg-soft: #0f1621;
+  --card: #121821;
+  --fg: #e9eef5;
+  --muted: #9db0c7;
+  --accent: #3ea6ff;
+  --accent-2: #8b5cf6;
+  --border: #223044;
+  --shadow: 0 10px 24px rgba(0,0,0,.28);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 0%, var(--bg) 60%); color: var(--fg); font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+
+/* Header */
+.topbar { position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px); background: linear-gradient(180deg, rgba(18,24,33,.9), rgba(18,24,33,.6)); border-bottom: 1px solid var(--border); }
+.topbar .inner { max-width: 980px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
+.brand { font-weight: 800; letter-spacing: .3px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.nav { margin-left: auto; display: flex; gap: 12px; }
+.nav a { color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 8px; transition: .2s ease; }
+.nav a:hover { color: var(--fg); background: rgba(255,255,255,.04); }
+
+/* Buttons */
+.btn { padding: 10px 14px; background: var(--accent); color: #00111f; border: 0; border-radius: 8px; cursor: pointer; font-weight: 700; letter-spacing: .2px; box-shadow: 0 6px 16px rgba(62,166,255,.35); transition: transform .08s ease, box-shadow .2s ease; }
+.btn:active { transform: translateY(1px); box-shadow: 0 4px 10px rgba(62,166,255,.25); }
+.btn.secondary { background: #1d2633; color: var(--fg); border: 1px solid var(--border); box-shadow: none; }
+
+/* Inputs */
+.input { padding: 10px 12px; background: var(--card); border: 1px solid var(--border); color: var(--fg); border-radius: 8px; outline: none; transition: border-color .15s ease, box-shadow .2s ease; }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(62,166,255,.18); }
+
+/* Containers */
+.wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+.card { background: linear-gradient(180deg, var(--card), #0d141d); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; align-items: center; gap: 12px; box-shadow: var(--shadow); animation: fadeIn .25s ease both; }
+
+/* Suggestions */
+.suggest { position: absolute; left: 0; right: 0; top: 44px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; z-index: 20; max-height: 300px; overflow-y: auto; box-shadow: var(--shadow); animation: pop .12s ease-out both; }
+.s-item { padding: 10px 12px; cursor: pointer; display: grid; grid-template-columns: 80px 1fr; gap: 10px; align-items: center; transition: background .12s ease; }
+.s-item:hover, .s-item.active { background: rgba(255,255,255,.05); }
+.s-entity { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; text-transform: uppercase; text-align: center; }
+.s-title { font-weight: 700; }
+.s-sub { font-size: 12px; color: var(--muted); }
+
+/* Animations */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px);} to { opacity: 1; transform: translateY(0);} }
+@keyframes pop { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: scale(1);} }
+.fade-in { animation: fadeIn .25s ease both; }
+.slide-up { animation: fadeIn .3s ease both; }
+
+/* Spinner */
+.spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg);} }
+
+/* Skeleton */
+.skeleton { background: linear-gradient(90deg, #101825, #0e1621 40%, #101825 80%); background-size: 200% 100%; animation: skeleton 1s ease-in-out infinite; border-radius: 8px; }
+@keyframes skeleton { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* Mark highlight */
+mark { color: inherit; background: linear-gradient(90deg, rgba(62,166,255,.2), rgba(139,92,246,.2)); padding: 0 2px; border-radius: 3px; }
+

@@ -23,6 +23,13 @@
       .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
       label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
       input[type="text"], input[type="date"] { width: 100%; padding: 10px 12px; background: #0e141c; border: 1px solid var(--border); color: var(--fg); border-radius: 6px; }
+      .rel { position: relative; }
+      .suggest { position: absolute; left: 0; right: 0; top: 56px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; z-index: 10; max-height: 240px; overflow-y: auto; box-shadow: 0 8px 14px rgba(0,0,0,0.2); }
+      .s-item { padding: 8px 12px; cursor: pointer; display: grid; grid-template-columns: 72px 1fr; gap: 8px; align-items: center; }
+      .s-item:hover, .s-item.active { background: #0e141c; }
+      .s-entity { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; text-transform: uppercase; text-align: center; }
+      .s-title { font-weight: 600; }
+      .s-sub { font-size: 12px; color: var(--muted); }
       .controls { display: flex; gap: 10px; align-items: end; margin-top: 12px; }
       button { padding: 10px 14px; background: var(--accent); color: #00111f; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; }
       button:disabled { opacity: .6; cursor: default; }
@@ -40,13 +47,15 @@
       <div class="meta"><a href="/">← Back to Search</a></div>
       <div class="box">
         <div class="row">
-          <div>
+          <div class="rel">
             <label for="home">Home team (id or name)</label>
-            <input id="home" type="text" placeholder="e.g. Lakers or 1610612747" />
+            <input id="home" type="text" placeholder="e.g. Lakers or 1610612747" autocomplete="off" aria-autocomplete="list" />
+            <div id="sugg-home" class="suggest" style="display:none"></div>
           </div>
-          <div>
+          <div class="rel">
             <label for="away">Away team (id or name)</label>
-            <input id="away" type="text" placeholder="e.g. Celtics or 1610612738" />
+            <input id="away" type="text" placeholder="e.g. Celtics or 1610612738" autocomplete="off" aria-autocomplete="list" />
+            <div id="sugg-away" class="suggest" style="display:none"></div>
           </div>
         </div>
         <div class="controls">
@@ -68,6 +77,8 @@
     <script>
       const home = document.getElementById('home');
       const away = document.getElementById('away');
+      const sh = document.getElementById('sugg-home');
+      const sa = document.getElementById('sugg-away');
       const date = document.getElementById('date');
       const btn = document.getElementById('btn');
       const err = document.getElementById('err');
@@ -116,6 +127,70 @@
 
       btn.addEventListener('click', predict);
       home.focus();
+
+      // --- Suggest for teams using /search (filter to teams) ---
+      function renderSuggest(container, input, items) {
+        if (!items || items.length === 0) { container.style.display='none'; container.innerHTML=''; return; }
+        container.innerHTML = '';
+        items.slice(0, 10).forEach((it, idx) => {
+          const div = document.createElement('div');
+          div.className = 's-item' + (idx === 0 ? ' active' : '');
+          const badge = document.createElement('div'); badge.className='s-entity'; badge.textContent='team';
+          const box = document.createElement('div');
+          const t = document.createElement('div'); t.className='s-title'; t.textContent = it._title || '';
+          const s = document.createElement('div'); s.className='s-sub'; s.textContent = it._subtitle || '';
+          box.appendChild(t); if (s.textContent) box.appendChild(s);
+          div.appendChild(badge); div.appendChild(box);
+          div.addEventListener('mousedown', (ev) => { ev.preventDefault(); input.value = it._title || it._id || ''; container.style.display='none'; });
+          container.appendChild(div);
+        });
+        container.style.display='block';
+      }
+
+      async function fetchTeamSuggest(text) {
+        const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=team&limit=15`, { headers: { 'accept':'application/json' } });
+        if (!res.ok) return [];
+        const data = await res.json();
+        const items = (data.items || []).filter(it => (it._entity||'') === 'team');
+        return items;
+      }
+
+      function wireSuggest(input, container) {
+        let timer = null;
+        input.addEventListener('input', () => {
+          const text = (input.value || '').trim();
+          if (timer) clearTimeout(timer);
+          if (!text) { container.style.display='none'; return; }
+          timer = setTimeout(async () => {
+            try {
+              const items = await fetchTeamSuggest(text);
+              renderSuggest(container, input, items);
+            } catch {}
+          }, 160);
+        });
+        input.addEventListener('keydown', (ev) => {
+          if (container.style.display === 'none') return;
+          const items = Array.from(container.querySelectorAll('.s-item'));
+          if (!items.length) return;
+          const idx = items.findIndex(n => n.classList.contains('active'));
+          if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+            ev.preventDefault();
+            let ni = idx + (ev.key === 'ArrowDown' ? 1 : -1);
+            if (ni < 0) ni = items.length-1; if (ni >= items.length) ni = 0;
+            items.forEach(n => n.classList.remove('active')); items[ni].classList.add('active');
+            items[ni].scrollIntoView({ block:'nearest' });
+          } else if (ev.key === 'Enter') {
+            const active = items[idx >= 0 ? idx : 0];
+            if (active) active.dispatchEvent(new MouseEvent('mousedown'));
+          } else if (ev.key === 'Escape') {
+            container.style.display='none';
+          }
+        });
+        input.addEventListener('blur', () => setTimeout(() => container.style.display='none', 150));
+      }
+
+      wireSuggest(home, sh);
+      wireSuggest(away, sa);
     </script>
   </body>
   </html>

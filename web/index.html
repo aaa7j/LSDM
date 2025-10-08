@@ -4,47 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>NBA Search</title>
-    <style>
-      :root {
-        --bg: #0b0f14;
-        --card: #121821;
-        --fg: #e9eef5;
-        --muted: #9db0c7;
-        --accent: #3ea6ff;
-        --border: #223044;
-      }
-      body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, Arial, sans-serif; }
-      .wrap { max-width: 900px; margin: 32px auto; padding: 0 16px; }
-      h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; color: var(--fg); }
-      .search-box { display: flex; gap: 8px; }
-      input[type="text"] { flex: 1; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); color: var(--fg); border-radius: 6px; }
-      button { padding: 10px 14px; background: var(--accent); color: #00111f; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; }
-      button:disabled { opacity: .6; cursor: default; }
-      .meta { margin-top: 10px; color: var(--muted); font-size: 12px; }
-      .results { margin-top: 20px; display: grid; gap: 8px; }
-      .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; align-items: center; gap: 12px; }
-      .badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
-      .title { font-weight: 600; }
-      .sub { color: var(--muted); }
-      .extra { font-size: 12px; color: var(--muted); }
-      .error { color: #ff6b6b; margin-top: 10px; }
-      footer { margin: 32px 0; color: var(--muted); font-size: 12px; }
-    </style>
+    <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body>
+    <div class="topbar">
+      <div class="inner">
+        <div class="brand">NBA Search</div>
+        <div class="nav">
+          <a href="/">Search</a>
+          <a href="/predict-ui">Predict</a>
+        </div>
+      </div>
+    </div>
     <div class="wrap">
-      <h1>NBA Search (players â€¢ teams â€¢ games)</h1>\n      <div class="meta"><a href="/predict-ui">Predict Outcome →</a></div>
-      <form id="f" class="search-box">
-        <input id="q" type="text" placeholder="e.g. Michael Jordan, Lakers 2010, 2016-06-19" autocomplete="off" />
-        <button id="btn" type="submit">Search</button>
+      <h1 class="fade-in">Search (players • teams • games)</h1>
+      <form id="f" class="search-box" autocomplete="off">
+        <input id="q" class="input" type="text" placeholder="e.g. Michael Jordan, Lakers 2010, 2016-06-19" autocomplete="off" aria-autocomplete="list" />
+        <button id="btn" class="btn" type="submit">Search</button>
+        <div id="sugg" class="suggest" style="display:none"></div>
       </form>
       <div class="meta" id="meta"></div>
       <div class="error" id="err"></div>
       <div class="results" id="results"></div>
-      <footer>
-        Minimal demo UI. Results powered by the local FastAPI service.
+      <footer style="margin: 28px 0; color: var(--muted); font-size: 12px;">
+        Minimal UI. Results powered by the local FastAPI service.
       </footer>
     </div>
+    <script src="/static/app.js"></script>
     <script>
       const f = document.getElementById('f');
       const q = document.getElementById('q');
@@ -52,6 +38,7 @@
       const meta = document.getElementById('meta');
       const err = document.getElementById('err');
       const results = document.getElementById('results');
+      const sugg = document.getElementById('sugg');
 
       function renderItems(items) {
         results.innerHTML = '';
@@ -61,17 +48,17 @@
         }
         for (const it of items) {
           const div = document.createElement('div');
-          div.className = 'card';
+          div.className = 'card slide-up';
           const badge = document.createElement('span');
           badge.className = 'badge';
           badge.textContent = it._entity || '-';
           const box = document.createElement('div');
           const title = document.createElement('div');
           title.className = 'title';
-          title.textContent = it._title || it._id;
+          title.innerHTML = highlight(it._title || it._id, q.value);
           const sub = document.createElement('div');
           sub.className = 'sub';
-          sub.textContent = it._subtitle || '';
+          sub.innerHTML = highlight(it._subtitle || '', q.value);
           const extra = document.createElement('div');
           extra.className = 'extra';
           extra.textContent = it._extra || '';
@@ -86,15 +73,15 @@
 
       async function doSearch(text) {
         err.textContent = '';
-        meta.textContent = 'Searchingâ€¦';
-        results.innerHTML = '';
+        setLoading(meta, true);
+        results.innerHTML = Array.from({length: 5}).map(()=>'<div class="card"><div class="skeleton" style="width:76px;height:22px;border-radius:6px"></div><div style="flex:1"><div class="skeleton" style="height:14px;margin-bottom:8px"></div><div class="skeleton" style="height:12px;width:60%"></div></div></div>').join('');
         btn.disabled = true;
         try {
           const url = `/search?q=${encodeURIComponent(text)}&limit=50`;
           const res = await fetch(url, { headers: { 'accept': 'application/json' } });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
-          meta.textContent = `Query: ${data?.meta?.query || text}  â€¢  Results: ${data?.total ?? data?.items?.length ?? 0}`;
+          meta.textContent = `Query: ${data?.meta?.query || text}  •  Results: ${data?.total ?? data?.items?.length ?? 0}`;
           renderItems(data.items || []);
         } catch (e) {
           console.error(e);
@@ -102,8 +89,74 @@
           meta.textContent = '';
         } finally {
           btn.disabled = false;
+          setLoading(meta, false);
         }
       }
+
+      function renderSuggest(items) {
+        if (!items || items.length === 0) { sugg.style.display = 'none'; sugg.innerHTML = ''; return; }
+        sugg.innerHTML = '';
+        items.slice(0, 12).forEach((it, idx) => {
+          const div = document.createElement('div');
+          div.className = 's-item' + (idx === 0 ? ' active' : '');
+          div.dataset.idx = idx;
+          const badge = document.createElement('div');
+          badge.className = 's-entity'; badge.textContent = it._entity || '-';
+          const box = document.createElement('div');
+          const t = document.createElement('div'); t.className = 's-title'; t.innerHTML = highlight(it._title || it._id || '', q.value);
+          const s = document.createElement('div'); s.className = 's-sub'; s.innerHTML = highlight(it._subtitle || '', q.value);
+          box.appendChild(t); if (s.textContent) box.appendChild(s);
+          div.appendChild(badge); div.appendChild(box);
+          div.addEventListener('mousedown', (ev) => { ev.preventDefault(); q.value = (it._title || it._id || '').toString(); sugg.style.display='none'; doSearch(q.value); });
+          sugg.appendChild(div);
+        });
+        sugg.style.display = 'block';
+      }
+
+      // Instant suggest with small debounce refresh
+      let suggestTimer = null;
+      q.addEventListener('input', () => {
+        const text = (q.value || '').trim();
+        if (!text) { if (suggestTimer) clearTimeout(suggestTimer); sugg.style.display='none'; return; }
+        (async () => {
+          try {
+            const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&limit=15`, { headers: { 'accept':'application/json' } });
+            if (!res.ok) throw new Error('HTTP '+res.status);
+            const data = await res.json();
+            renderSuggest((data.items || []).slice(0, 12));
+          } catch (e) {}
+        })();
+        if (suggestTimer) clearTimeout(suggestTimer);
+        suggestTimer = setTimeout(async () => {
+          try {
+            const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&limit=15`, { headers: { 'accept':'application/json' } });
+            if (!res.ok) throw new Error('HTTP '+res.status);
+            const data = await res.json();
+            renderSuggest((data.items || []).slice(0, 12));
+          } catch {}
+        }, 60);
+      });
+
+      // keyboard navigation for suggestions
+      q.addEventListener('keydown', (ev) => {
+        if (sugg.style.display === 'none') return;
+        const items = Array.from(sugg.querySelectorAll('.s-item'));
+        if (!items.length) return;
+        const idx = items.findIndex(n => n.classList.contains('active'));
+        if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+          ev.preventDefault();
+          let ni = idx + (ev.key === 'ArrowDown' ? 1 : -1);
+          if (ni < 0) ni = items.length-1; if (ni >= items.length) ni = 0;
+          items.forEach(n => n.classList.remove('active')); items[ni].classList.add('active');
+          items[ni].scrollIntoView({ block: 'nearest' });
+        } else if (ev.key === 'Enter') {
+          const active = items[idx >= 0 ? idx : 0];
+          if (active) { active.dispatchEvent(new MouseEvent('mousedown')); }
+        } else if (ev.key === 'Escape') {
+          sugg.style.display = 'none';
+        }
+      });
+      q.addEventListener('blur', () => { setTimeout(() => { sugg.style.display='none'; }, 150); });
 
       f.addEventListener('submit', (ev) => {
         ev.preventDefault();
@@ -112,9 +165,7 @@
         doSearch(text);
       });
 
-      // autofocus for convenience
       q.focus();
     </script>
   </body>
-  </html>
-
+</html>

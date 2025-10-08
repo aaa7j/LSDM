@@ -158,6 +158,131 @@ def train_pregame_outcome_model(
     return model, metrics
 
 
+# ----------------------------
+# Utilities for cum-avg pre-game model
+# ----------------------------
+def build_game_result_views(spark: SparkSession) -> None:
+    """Create GAME_POINTS and GAME_RESULT temp views from GLOBAL_* tables.
+    GAME_RESULT contains game_date, home/away team ids, home_pts, away_pts, home_win.
+    """
+    # Some Spark catalogs list names in lowercase; normalize to uppercase for checks
+    tbls = {t.name.upper() for t in spark.catalog.listTables()}
+    if "GLOBAL_LINE_SCORE" not in tbls or "GLOBAL_GAME" not in tbls:
+        raise RuntimeError("Missing required tables: GLOBAL_LINE_SCORE / GLOBAL_GAME")
+
+    lp = (
+        spark.table("GLOBAL_LINE_SCORE")
+        .groupBy("game_id", "team_id")
+        .agg(F.sum(F.col("points")).alias("pts"))
+    )
+    lp.createOrReplaceTempView("GAME_POINTS")
+
+    g = spark.table("GLOBAL_GAME").select(
+        F.col("game_id").cast("string").alias("game_id"),
+        F.col("game_date").cast("date").alias("game_date"),
+        F.col("home_team_id").cast("int").alias("home_team_id"),
+        F.col("away_team_id").cast("int").alias("away_team_id"),
+    )
+    hp = lp.withColumnRenamed("team_id", "home_team_id").withColumnRenamed("pts", "home_pts")
+    ap = lp.withColumnRenamed("team_id", "away_team_id").withColumnRenamed("pts", "away_pts")
+
+    gr = (
+        g.join(hp, ["game_id", "home_team_id"], "left")
+         .join(ap, ["game_id", "away_team_id"], "left")
+         .where(F.col("home_pts").isNotNull() & F.col("away_pts").isNotNull())
+         .select(
+             "game_id",
+             "game_date",
+             "home_team_id",
+             "away_team_id",
+             "home_pts",
+             "away_pts",
+             (F.col("home_pts") > F.col("away_pts")).cast("int").alias("home_win"),
+         )
+    )
+    gr.createOrReplaceTempView("GAME_RESULT")
+    spark.catalog.cacheTable("GAME_RESULT")
+
+
+def ensure_prediction_views(spark: SparkSession, train_years: int = 1) -> None:
+    """Create TEAM_DAILY_DIFF and TEAM_CUMAVG used by pre-game prediction.
+    Restricts horizon to last train_years to keep computation reasonable.
+    """
+    tbls = {t.name for t in spark.catalog.listTables()}
+    if "GAME_RESULT" not in tbls:
+        build_game_result_views(spark)
+
+    # cut to last N years
+    maxd_row = spark.sql("SELECT MAX(CAST(game_date AS DATE)) AS d FROM GAME_RESULT").collect()[0]
+    maxd = maxd_row["d"] if maxd_row else None
+    cutoff_expr = f"DATE_SUB(DATE('{maxd}'), {train_years*365})" if maxd else None
+
+    if cutoff_expr:
+        spark.sql(
+            f"""
+            CREATE OR REPLACE TEMP VIEW TEAM_DAILY_DIFF AS
+            SELECT game_date, home_team_id AS team_id, CAST(home_pts - away_pts AS DOUBLE) AS diff
+            FROM GAME_RESULT WHERE game_date >= {cutoff_expr}
+            UNION ALL
+            SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) * (-1.0) AS diff
+            FROM GAME_RESULT WHERE game_date >= {cutoff_expr}
+            """
+        )
+    else:
+        spark.sql(
+            """
+            CREATE OR REPLACE TEMP VIEW TEAM_DAILY_DIFF AS
+            SELECT game_date, home_team_id AS team_id, CAST(home_pts - away_pts AS DOUBLE) AS diff FROM GAME_RESULT
+            UNION ALL
+            SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) * (-1.0) AS diff FROM GAME_RESULT
+            """
+        )
+
+    spark.sql(
+        """
+        CREATE OR REPLACE TEMP VIEW TEAM_CUMAVG AS
+        SELECT
+            team_id,
+            game_date,
+            AVG(diff) OVER (
+                PARTITION BY team_id
+                ORDER BY game_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS cum_avg_diff
+        FROM TEAM_DAILY_DIFF
+        """
+    )
+
+
+def train_cumavg_model(spark: SparkSession, train_years: int = 1) -> Tuple[Optional[PipelineModel], Dict[str, float]]:
+    """Train a simple pre-game model using cum-avg diff as the only feature.
+    Returns (model or None, metrics dict).
+    """
+    ensure_prediction_views(spark, train_years=train_years)
+    train_df = spark.sql(
+        """
+        SELECT r.game_id,
+               r.home_win AS label,
+               AVG(COALESCE(h.cum_avg_diff, 0.0) - COALESCE(a.cum_avg_diff, 0.0)) AS expected_diff
+        FROM GAME_RESULT r
+        LEFT JOIN TEAM_CUMAVG h ON h.team_id = r.home_team_id AND h.game_date < r.game_date
+        LEFT JOIN TEAM_CUMAVG a ON a.team_id = r.away_team_id AND a.game_date < r.game_date
+        GROUP BY r.game_id, r.home_win
+        HAVING r.home_win IS NOT NULL
+        """
+    ).where(F.col("expected_diff").isNotNull())
+
+    labels = [r[0] for r in train_df.groupBy("label").count().collect()]
+    if len(labels) < 2:
+        return None, {"train_rows": float(train_df.count()), "note": -1.0}
+
+    assembler = VectorAssembler(inputCols=["expected_diff"], outputCol="features")
+    lr = LogisticRegression(featuresCol="features", labelCol="label", maxIter=100)
+    pipe = Pipeline(stages=[assembler, lr])
+    model = pipe.fit(train_df)
+    metrics: Dict[str, float] = {"train_rows": float(train_df.count()), "train_years": float(train_years)}
+    return model, metrics
+
 def team_form_at(
     spark: SparkSession,
     team_id: int,

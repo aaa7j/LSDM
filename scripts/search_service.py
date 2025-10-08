@@ -1,5 +1,5 @@
-"""
-FastAPI search service that keeps a single long‑lived PySpark session.
+﻿"""
+FastAPI search service that keeps a single longâ€‘lived PySpark session.
 
 Notes
 - Spark is created on FastAPI startup and stopped on shutdown.
@@ -21,6 +21,8 @@ from pyspark.sql import functions as F
 import json
 
 from src.search.engine import run_query
+import src.search.engine as search_engine
+import math
 from src.analytics.outcome import (
     FEATURE_DIFFS,
     build_pregame_features,
@@ -33,9 +35,11 @@ from pyspark.ml import Pipeline, PipelineModel
 from pyspark.ml.classification import LogisticRegression
 from pyspark.ml.feature import StandardScaler, VectorAssembler
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
+import time
 
 
 WAREHOUSE_DIR = os.environ.get("WAREHOUSE_DIR", "warehouse")
+POPULARITY_DIR = os.environ.get("POPULARITY_DIR", os.path.join("metadata", "popularity"))
 
 GLOBAL_PARQUET = {
     # Views needed for search and predictions
@@ -113,6 +117,105 @@ def _register_views_from_warehouse(spark: SparkSession, base: str = WAREHOUSE_DI
         print(f"[WARN] Could not prepare GAME_RESULT from GLOBAL_LINE_SCORE: {e}")
     print("[OK] GLOBAL_* views registered and cached (where available)")
 
+
+def _ensure_prediction_views(spark: SparkSession) -> None:
+    """Create TEAM_DAILY_DIFF and TEAM_CUMAVG used by prediction/training.
+    Uses GAME_RESULT if present for reliable scores; restricts to last TRAIN_YEARS.
+    """
+    tbls = {t.name.upper() for t in spark.catalog.listTables()}
+    if "GAME_RESULT" not in tbls:
+        # Build GAME_RESULT from GLOBAL_LINE_SCORE if missing
+        if "GLOBAL_LINE_SCORE" in tbls:
+            lp = (spark.table("GLOBAL_LINE_SCORE")
+                  .groupBy("game_id", "team_id")
+                  .agg(F.sum(F.col("points")).alias("pts")))
+            lp.createOrReplaceTempView("GAME_POINTS")
+            g = spark.table("GLOBAL_GAME").select(
+                F.col("game_id").cast("string").alias("game_id"),
+                F.col("game_date").cast("date").alias("game_date"),
+                F.col("home_team_id").cast("int").alias("home_team_id"),
+                F.col("away_team_id").cast("int").alias("away_team_id"),
+            )
+            hp = lp.withColumnRenamed("team_id", "home_team_id").withColumnRenamed("pts", "home_pts")
+            ap = lp.withColumnRenamed("team_id", "away_team_id").withColumnRenamed("pts", "away_pts")
+            gr = (g
+                  .join(hp, ["game_id", "home_team_id"], "left")
+                  .join(ap, ["game_id", "away_team_id"], "left")
+                  .where(F.col("home_pts").isNotNull() & F.col("away_pts").isNotNull()))
+            gr.createOrReplaceTempView("GAME_RESULT")
+            spark.catalog.cacheTable("GAME_RESULT")
+
+    # Determine cutoff based on TRAIN_YEARS
+    maxd = spark.sql("SELECT MAX(CAST(game_date AS DATE)) AS d FROM GAME_RESULT").collect()[0]["d"] if "GAME_RESULT" in {t.name.upper() for t in spark.catalog.listTables()} else None
+    cutoff_expr = f"DATE_SUB(DATE('{maxd}'), {int(os.environ.get('TRAIN_YEARS','1'))*365})" if maxd else None
+
+    if cutoff_expr:
+        spark.sql(
+            f"""
+            CREATE OR REPLACE TEMP VIEW TEAM_DAILY_DIFF AS
+            SELECT game_date, home_team_id AS team_id, CAST(home_pts - away_pts AS DOUBLE) AS diff
+            FROM GAME_RESULT WHERE game_date >= {cutoff_expr}
+            UNION ALL
+            SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) * (-1.0) AS diff
+            FROM GAME_RESULT WHERE game_date >= {cutoff_expr}
+            """
+        )
+    else:
+        spark.sql(
+            """
+            CREATE OR REPLACE TEMP VIEW TEAM_DAILY_DIFF AS
+            SELECT game_date, home_team_id AS team_id, CAST(home_pts - away_pts AS DOUBLE) AS diff FROM GAME_RESULT
+            UNION ALL
+            SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) * (-1.0) AS diff FROM GAME_RESULT
+            """
+        )
+
+    spark.sql(
+        """
+        CREATE OR REPLACE TEMP VIEW TEAM_CUMAVG AS
+        SELECT
+            team_id,
+            game_date,
+            AVG(diff) OVER (
+                PARTITION BY team_id
+                ORDER BY game_date
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS cum_avg_diff
+        FROM TEAM_DAILY_DIFF
+        """
+    )
+
+
+def _load_popularity_maps(spark: SparkSession) -> tuple[dict[str, float], dict[str, float]]:
+    """Load popularity Parquet (players, teams) if available and return normalized maps.
+    Returns (player_pop, team_pop) with scores in [0,1].
+    """
+    ppl: dict[str, float] = {}
+    tpm: dict[str, float] = {}
+    try:
+        players_pq = os.path.join(POPULARITY_DIR, "players")
+        teams_pq = os.path.join(POPULARITY_DIR, "teams")
+        if os.path.isdir(players_pq):
+            pdf = spark.read.parquet(players_pq)
+            score_col = "score" if "score" in pdf.columns else "cnt"
+            pdf = pdf.select(F.col("player_id").cast("string").alias("id"), F.col(score_col).cast("double").alias("score"))
+            row = pdf.agg(F.max("score").alias("mx")).collect()[0]
+            mx = float(row["mx"]) if row and row["mx"] is not None else 1.0
+            for r in pdf.collect():
+                c = float(r["score"]) if r["score"] is not None else 0.0
+                ppl[str(r["id"])]= (math.log1p(c)/math.log1p(mx)) if mx>0 else 0.0
+        if os.path.isdir(teams_pq):
+            tdf = spark.read.parquet(teams_pq)
+            score_col = "score" if "score" in tdf.columns else "cnt"
+            tdf = tdf.select(F.col("team_id").cast("string").alias("id"), F.col(score_col).cast("double").alias("score"))
+            row = tdf.agg(F.max("score").alias("mx")).collect()[0]
+            mx = float(row["mx"]) if row and row["mx"] is not None else 1.0
+            for r in tdf.collect():
+                c = float(r["score"]) if r["score"] is not None else 0.0
+                tpm[str(r["id"])]= (math.log1p(c)/math.log1p(mx)) if mx>0 else 0.0
+    except Exception as e:
+        print(f"[WARN] Popularity load failed: {e}")
+    return ppl, tpm
 
 def build_labels_and_train_model(spark: SparkSession) -> Optional[PipelineModel]:
     """Build labels from GLOBAL_LINE_SCORE, compute pre-game cum-avg feature, train LR.
@@ -247,180 +350,29 @@ def _on_startup():
         spark.sql("SELECT * FROM GLOBAL_GAME   LIMIT 1").collect()
     except Exception as e:
         print(f"[WARN] Warmup failed: {e}")
-    # Train minimal pre-game model (cum-avg diff). Keep in memory.
-    global outcome_model
+    # Build views needed for prediction always
     try:
-        outcome_model = build_labels_and_train_model(spark)
-        if outcome_model is None:
-            print("[WARN] Outcome model unavailable (single-class or empty TRAIN_SET)")
-        else:
-            print("[OK] Outcome model ready.")
-        return
+        _ensure_prediction_views(spark)
     except Exception as e:
-        print(f"[WARN] Outcome model unavailable: {e}")
-        return
-    # Load or train outcome model
+        print(f"[WARN] Prediction views build failed: {e}")
+    # Load popularity maps for better suggestion ranking
     try:
-        # Try load existing model and verify metadata matches current config (avoid loading if folder missing)
-        m = None
-        if os.path.isdir(MODEL_DIR) and os.path.isdir(os.path.join(MODEL_DIR, "stages")) and os.path.isdir(os.path.join(MODEL_DIR, "metadata")):
-            m = load_pipeline_model(MODEL_DIR)
-        metadata_path = os.path.join(MODEL_DIR, "metadata.json")
-        need_retrain = True
-        if m is not None and os.path.isfile(metadata_path):
-            try:
-                with open(metadata_path, "r", encoding="utf-8") as fh:
-                    meta = json.load(fh)
-                if int(meta.get("years", 0)) == FORM_YEARS and int(meta.get("window", 0)) == FORM_WINDOW:
-                    need_retrain = False
-                # sync active params to metadata when loading existing model
-                ACTIVE_FORM_YEARS = int(meta.get("years", FORM_YEARS))
-                ACTIVE_FORM_WINDOW = int(meta.get("window", FORM_WINDOW))
-            except Exception:
-                need_retrain = True
-        if need_retrain:
-            print("[INIT] Training outcome model (pre-game features)...")
-            # Try with configured window/years; if no features, relax params
-            train_window, train_years = FORM_WINDOW, FORM_YEARS
-            try:
-                feats = build_pregame_features(spark, window_n=train_window, years=train_years)
-                if feats.limit(1).count() == 0:
-                    print(f"[WARN] No training features with years={train_years}, window={train_window}. Trying fallback...")
-                    # First fallback: extend years
-                    train_years = max(2, FORM_YEARS)
-                    feats = build_pregame_features(spark, window_n=train_window, years=train_years)
-                    if feats.limit(1).count() == 0:
-                        # Second fallback: shrink window
-                        train_window = max(3, FORM_WINDOW // 2)
-                        feats = build_pregame_features(spark, window_n=train_window, years=train_years)
-                        if feats.limit(1).count() == 0:
-                            raise RuntimeError("No training features available even after pre-game fallbacks")
-            except Exception as e:
-                print(f"[WARN] Pre-game feature build failed: {e}")
-                # Absolute fallback: simple per-game diffs (no rolling form)
-                print("[INIT] Falling back to simple outcome model (per-game diffs)")
-                # Rebuild simple features with safe casts to avoid type mismatches
-                # Use GAME_RESULT when available to ensure final scores exist
-                table_names = {t.name for t in spark.catalog.listTables()}
-                if "GAME_RESULT" in table_names:
-                    g = (spark.table("GAME_RESULT")
-                            .select(
-                                F.col("game_id").cast("string").alias("game_id"),
-                                F.col("game_date").cast("date").alias("game_date"),
-                                F.col("home_team_id").cast("int").alias("home_team_id"),
-                                F.col("away_team_id").cast("int").alias("away_team_id"),
-                                F.col("home_pts").cast("int").alias("final_score_home"),
-                                F.col("away_pts").cast("int").alias("final_score_away"),
-                            ))
-                else:
-                    g = (spark.table("GLOBAL_GAME")
-                            .select(
-                                F.col("game_id").cast("string").alias("game_id"),
-                                F.col("game_date"),
-                                F.col("home_team_id").cast("int").alias("home_team_id"),
-                                F.col("away_team_id").cast("int").alias("away_team_id"),
-                                F.col("final_score_home"),
-                                F.col("final_score_away"),
-                            ))
-                s = (spark.table("GLOBAL_OTHER_STATS")
-                     .select(
-                         F.col("game_id").cast("string").alias("game_id"),
-                         F.col("team_id").cast("int").alias("team_id"),
-                         F.col("points"),
-                         F.col("rebounds"), F.col("assists"), F.col("steals"), F.col("blocks"), F.col("turnovers"), F.col("fouls"),
-                     ))
-                home = s.alias("home")
-                away = s.alias("away")
-                # First try: inner-join both sides so both stats exist; label from final scores, else points
-                simple_inner = (g.alias("g")
-                          .join(home,
-                                (F.col("g.game_id") == F.col("home.game_id")) & (F.col("g.home_team_id") == F.col("home.team_id")),
-                                "inner")
-                          .join(away,
-                                (F.col("g.game_id") == F.col("away.game_id")) & (F.col("g.away_team_id") == F.col("away.team_id")),
-                                "inner")
-                          .select(
-                              F.col("g.game_id").alias("game_id"),
-                              F.col("g.game_date").alias("game_date"),
-                              F.when(
-                                  (F.col("g.final_score_home").isNotNull()) & (F.col("g.final_score_away").isNotNull()),
-                                  (F.col("g.final_score_home") > F.col("g.final_score_away")).cast("double")
-                              ).otherwise(
-                                  (F.coalesce(F.col("home.points"), F.lit(0)) > F.coalesce(F.col("away.points"), F.lit(0))).cast("double")
-                              ).alias("label"),
-                              (F.coalesce(F.col("home.rebounds"), F.lit(0.0)) - F.coalesce(F.col("away.rebounds"), F.lit(0.0))).alias("rebounds_diff"),
-                              (F.coalesce(F.col("home.assists"), F.lit(0.0)) - F.coalesce(F.col("away.assists"), F.lit(0.0))).alias("assists_diff"),
-                              (F.coalesce(F.col("home.steals"), F.lit(0.0)) - F.coalesce(F.col("away.steals"), F.lit(0.0))).alias("steals_diff"),
-                              (F.coalesce(F.col("home.blocks"), F.lit(0.0)) - F.coalesce(F.col("away.blocks"), F.lit(0.0))).alias("blocks_diff"),
-                              (F.coalesce(F.col("home.turnovers"), F.lit(0.0)) - F.coalesce(F.col("away.turnovers"), F.lit(0.0))).alias("turnovers_diff"),
-                              (F.coalesce(F.col("home.fouls"), F.lit(0.0)) - F.coalesce(F.col("away.fouls"), F.lit(0.0))).alias("fouls_diff"),
-                          )
-                          .where(F.col("label").isNotNull())
-                          )
-                ds = simple_inner
-                if ds.limit(1).count() == 0:
-                    # Second try: left joins (keep more rows), label strictly from final scores
-                    ds = (g.alias("g")
-                          .join(home,
-                                (F.col("g.game_id") == F.col("home.game_id")) & (F.col("g.home_team_id") == F.col("home.team_id")),
-                                "left")
-                          .join(away,
-                                (F.col("g.game_id") == F.col("away.game_id")) & (F.col("g.away_team_id") == F.col("away.team_id")),
-                                "left")
-                          .select(
-                              F.col("g.game_id").alias("game_id"),
-                              F.col("g.game_date").alias("game_date"),
-                              (F.col("g.final_score_home") > F.col("g.final_score_away")).cast("double").alias("label"),
-                              (F.coalesce(F.col("home.rebounds"), F.lit(0.0)) - F.coalesce(F.col("away.rebounds"), F.lit(0.0))).alias("rebounds_diff"),
-                              (F.coalesce(F.col("home.assists"), F.lit(0.0)) - F.coalesce(F.col("away.assists"), F.lit(0.0))).alias("assists_diff"),
-                              (F.coalesce(F.col("home.steals"), F.lit(0.0)) - F.coalesce(F.col("away.steals"), F.lit(0.0))).alias("steals_diff"),
-                              (F.coalesce(F.col("home.blocks"), F.lit(0.0)) - F.coalesce(F.col("away.blocks"), F.lit(0.0))).alias("blocks_diff"),
-                              (F.coalesce(F.col("home.turnovers"), F.lit(0.0)) - F.coalesce(F.col("away.turnovers"), F.lit(0.0))).alias("turnovers_diff"),
-                              (F.coalesce(F.col("home.fouls"), F.lit(0.0)) - F.coalesce(F.col("away.fouls"), F.lit(0.0))).alias("fouls_diff"),
-                          )
-                          .where(F.col("label").isNotNull())
-                          )
-                if ds.limit(1).count() == 0:
-                    raise RuntimeError("No features available for simple outcome model either")
-                simple = ds
-                # Ensure both classes exist in training data
-                distinct_labels = simple.select("label").distinct().count()
-                if distinct_labels < 2:
-                    raise RuntimeError("Training set has a single class after filtering; cannot train binary classifier")
-                # Train LR on full dataset (avoid random split dropping a class)
-                assembler = VectorAssembler(inputCols=[
-                    "rebounds_diff","assists_diff","steals_diff","blocks_diff","turnovers_diff","fouls_diff"
-                ], outputCol="features_vector")
-                scaler = StandardScaler(inputCol="features_vector", outputCol="features", withMean=True, withStd=True)
-                lr = LogisticRegression(featuresCol="features", labelCol="label", maxIter=100)
-                pipeline = Pipeline(stages=[assembler, scaler, lr])
-                m = pipeline.fit(simple)
-                preds = m.transform(simple)
-                # Compute simple accuracy metric (on train set)
-                total = preds.count()
-                correct = preds.filter(F.col("prediction") == F.col("label")).count()
-                acc = float(correct)/float(total) if total else 0.0
-                metrics = {"train_rows": float(total), "accuracy": float(acc)}
-                # Record that this model was trained in 'simple' mode
-                train_years, train_window = 0, 0
-            else:
-                m, metrics = train_pregame_outcome_model(spark, window_n=train_window, years=train_years)
-            os.makedirs(MODEL_DIR, exist_ok=True)
-            m.write().overwrite().save(MODEL_DIR)
-            # Save sidecar metadata for future compatibility checks
-            try:
-                with open(metadata_path, "w", encoding="utf-8") as fh:
-                    json.dump({"years": train_years, "window": train_window, "metrics": metrics}, fh)
-            except Exception as e:
-                print(f"[WARN] Could not write model metadata: {e}")
-            ACTIVE_FORM_YEARS, ACTIVE_FORM_WINDOW = train_years, train_window
-            print(f"[OK] Outcome model trained and saved to {MODEL_DIR}. Metrics: {metrics}  (years={train_years}, window={train_window})")
-            outcome_model = m
-        else:
-            outcome_model = m
+        global _POP_PLAYER, _POP_TEAM
+        _POP_PLAYER, _POP_TEAM = _load_popularity_maps(spark)
+        print(f"[OK] Popularity maps loaded (players={len(_POP_PLAYER)}, teams={len(_POP_TEAM)})")
+    except Exception as e:
+        print(f"[WARN] Popularity maps not loaded: {e}")
+    # Load model if present; otherwise keep unavailable (no training here)
+    try:
+        model_path_ok = os.path.isdir(MODEL_DIR) and os.path.isdir(os.path.join(MODEL_DIR, "stages"))
+        if model_path_ok:
+            outcome_model = PipelineModel.load(MODEL_DIR)
             print(f"[OK] Outcome model loaded from {MODEL_DIR}")
+        else:
+            print(f"[WARN] Outcome model not found at {MODEL_DIR}. Use scripts/train_outcome.py to train it.")
     except Exception as e:
-        print(f"[WARN] Outcome model unavailable: {e}")
+        print(f"[WARN] Outcome model load/train failed: {e}")
+    # (legacy training block removed: serving is load-only)
 
 
 @app.on_event("shutdown")
@@ -468,6 +420,207 @@ def search(
     rows, meta = run_query(spark, q.strip(), top_n=limit)
     return {"total": len(rows), "items": rows, "meta": meta}
 
+
+@app.get("/suggest")
+def suggest(
+    q: str = Query(..., description="Text to search for suggestions"),
+    limit: int = Query(15, ge=1, le=50, description="Max suggestions"),
+    entity: Optional[str] = Query(None, description="Filter by entity: player/team/game"),
+):
+    if spark is None:
+        return {"items": []}
+    q2 = (q or "").strip()
+    if not q2:
+        return {"items": []}
+
+    # --- simple in-memory cache for fast repeated suggest ---
+    _CACHE_TTL = 20.0
+    global _SUGGEST_CACHE  # type: ignore
+    try:
+        _SUGGEST_CACHE
+    except NameError:
+        _SUGGEST_CACHE = {}
+    key = (q2.lower(), (entity or '').lower(), int(limit))
+    now = time.time()
+    hit = _SUGGEST_CACHE.get(key)
+    if hit and (now - hit[0] <= _CACHE_TTL):
+        return {"items": hit[1]}
+
+    rows: list[dict] = []
+    ent = (entity or '').strip().lower()
+    try:
+        if ent == 'team':
+            df = search_engine._candidate_teams(spark, q2, limit=limit)  # noqa: SLF001
+            df2 = (df
+                   .select(
+                       F.lit('team').alias('_entity'),
+                       F.col('_score'),
+                       F.col('team_id').cast('string').alias('_id'),
+                       F.col('team_name').alias('_title'),
+                       F.col('city').alias('_subtitle'),
+                       F.lit(None).cast('string').alias('_extra')
+                   ))
+            rows = [r.asDict(recursive=True) for r in df2.collect()]
+        elif ent == 'player':
+            df = search_engine._candidate_players(spark, q2, limit=limit)  # noqa: SLF001
+            df2 = (df
+                   .select(
+                       F.lit('player').alias('_entity'),
+                       F.col('_score'),
+                       F.col('player_id').cast('string').alias('_id'),
+                       F.col('full_name').alias('_title'),
+                       F.col('position').alias('_subtitle'),
+                       F.lit(None).cast('string').alias('_extra')
+                   ))
+            rows = [r.asDict(recursive=True) for r in df2.collect()]
+        elif ent == 'game':
+            df = search_engine._candidate_games(spark, q2, limit=limit)  # noqa: SLF001
+            df2 = (df
+                   .select(
+                       F.lit('game').alias('_entity'),
+                       F.col('_score'),
+                       F.col('game_id').cast('string').alias('_id'),
+                       F.concat_ws(' vs ', F.coalesce(F.col('home_name'), F.col('home_team_id')), F.coalesce(F.col('away_name'), F.col('away_team_id'))).alias('_title'),
+                       F.col('game_date').cast('string').alias('_subtitle'),
+                       F.concat_ws(' - ', F.col('final_score_home').cast('string'), F.col('final_score_away').cast('string')).alias('_extra')
+                   ))
+            rows = [r.asDict(recursive=True) for r in df2.collect()]
+        else:
+            # Default: balanced quick suggest across entities for responsiveness
+            per = max(3, int(math.ceil(limit / 3)))
+            items: list[dict] = []
+            # teams
+            try:
+                tdf = search_engine._candidate_teams(spark, q2, limit=per)  # noqa: SLF001
+                tdf2 = tdf.select(
+                    F.lit('team').alias('_entity'), F.col('_score'),
+                    F.col('team_id').cast('string').alias('_id'),
+                    F.col('team_name').alias('_title'), F.col('city').alias('_subtitle'), F.lit(None).cast('string').alias('_extra'))
+                items += [r.asDict(recursive=True) for r in tdf2.collect()]
+            except Exception:
+                pass
+            # players
+            try:
+                pdf = search_engine._candidate_players(spark, q2, limit=per)  # noqa: SLF001
+                pdf2 = pdf.select(
+                    F.lit('player').alias('_entity'), F.col('_score'),
+                    F.col('player_id').cast('string').alias('_id'),
+                    F.col('full_name').alias('_title'), F.col('position').alias('_subtitle'), F.lit(None).cast('string').alias('_extra'))
+                items += [r.asDict(recursive=True) for r in pdf2.collect()]
+            except Exception:
+                pass
+            # optionally add a few games only if query looks like a matchup
+            ql = q2.lower()
+            looks_matchup = (' vs ' in ql) or (' @ ' in ql) or ql.count('vs') == 1 or ql.count('@') == 1
+            if looks_matchup:
+                try:
+                    gdf = search_engine._candidate_games(spark, q2, limit=max(2, limit//4))  # noqa: SLF001
+                    gdf2 = gdf.select(
+                        F.lit('game').alias('_entity'), F.col('_score'),
+                        F.col('game_id').cast('string').alias('_id'),
+                        F.concat_ws(' vs ', F.coalesce(F.col('home_name'), F.col('home_team_id')), F.coalesce(F.col('away_name'), F.col('away_team_id'))).alias('_title'),
+                        F.col('game_date').cast('string').alias('_subtitle'),
+                        F.concat_ws(' - ', F.col('final_score_home').cast('string'), F.col('final_score_away').cast('string')).alias('_extra'))
+                    items += [r.asDict(recursive=True) for r in gdf2.collect()]
+                except Exception:
+                    pass
+            # sort by score desc and clip; slight bias: teams > players > games
+            def rank_key(x: dict):
+                typ = x.get('_entity')
+                type_boost = 0.02 if typ == 'team' else (0.01 if typ == 'player' else 0.0)
+                return (x.get('_score') is not None, float(x.get('_score') or 0.0) + type_boost)
+            rows = sorted(items, key=rank_key, reverse=True)[:limit]
+    except Exception:
+        rows = []
+
+    # Popularity-aware re-ranking
+    if rows:
+        boost_p = float(os.environ.get("SUGGEST_BOOST_PLAYER", "0.8"))
+        boost_t = float(os.environ.get("SUGGEST_BOOST_TEAM", "0.6"))
+        pop_player = globals().get("_POP_PLAYER", {})
+        pop_team = globals().get("_POP_TEAM", {})
+        ql = q2.lower()
+        def rank_of(item: dict) -> float:
+            base = float(item.get('_score') or 0.0)
+            ent = str(item.get('_entity',''))
+            title = str(item.get('_title') or '').lower()
+            # small prefix/exact boost for better UX
+            name_boost = 0.0
+            if title:
+                if title == ql:
+                    name_boost = 0.6
+                elif title.startswith(ql):
+                    name_boost = 0.25
+            if ent == 'player':
+                pop = pop_player.get(str(item.get('_id')), 0.0)
+                return base + boost_p * pop + name_boost
+            if ent == 'team':
+                pop = pop_team.get(str(item.get('_id')), 0.0)
+                return base + boost_t * pop + name_boost
+            return base + name_boost
+        rows = sorted(rows, key=rank_of, reverse=True)
+
+    clipped = rows[:limit]
+    _SUGGEST_CACHE[key] = (now, clipped)
+    return {"items": clipped}
+
+# --------------------------
+# Fuzzy fallback (typo-tolerant)
+# --------------------------
+def _fuzzy_teams_suggest(spark: SparkSession, q: str, limit: int) -> list[dict]:
+    ql = q.lower().strip()
+    if not ql:
+        return []
+    thr = max(1, int(round(len(ql) * 0.34)))
+    df = spark.table("GLOBAL_TEAM").select(
+        F.col("team_id").cast("string").alias("team_id"),
+        F.col("team_name"), F.col("city")
+    )
+    base = df.withColumn("q", F.lit(ql))
+    d1 = F.levenshtein(F.lower(F.col("team_name")), F.col("q"))
+    d2 = F.levenshtein(F.lower(F.col("city")), F.col("q"))
+    d = F.least(d1, d2)
+    cand = (base
+            .withColumn("d", d)
+            .where(F.col("d") <= F.lit(thr))
+            .orderBy(F.col("d").asc(), F.col("team_name").asc())
+            .limit(limit))
+    out = (cand.select(
+        F.lit('team').alias('_entity'),
+        (F.lit(100.0) - F.col('d').cast('double')).alias('_score'),
+        F.col('team_id').alias('_id'),
+        F.col('team_name').alias('_title'),
+        F.col('city').alias('_subtitle'),
+        F.lit(None).cast('string').alias('_extra')
+    ))
+    return [r.asDict(recursive=True) for r in out.collect()]
+
+
+def _fuzzy_players_suggest(spark: SparkSession, q: str, limit: int) -> list[dict]:
+    ql = q.lower().strip()
+    if not ql:
+        return []
+    thr = max(1, int(round(len(ql) * 0.34)))
+    df = spark.table("GLOBAL_PLAYER").select(
+        F.col("player_id").cast("string").alias("player_id"),
+        F.col("full_name"), F.col("position")
+    )
+    base = df.withColumn("q", F.lit(ql))
+    d = F.levenshtein(F.lower(F.col("full_name")), F.col("q"))
+    cand = (base
+            .withColumn("d", d)
+            .where(F.col("d") <= F.lit(thr))
+            .orderBy(F.col("d").asc(), F.col("full_name").asc())
+            .limit(limit))
+    out = (cand.select(
+        F.lit('player').alias('_entity'),
+        (F.lit(100.0) - F.col('d').cast('double')).alias('_score'),
+        F.col('player_id').alias('_id'),
+        F.col('full_name').alias('_title'),
+        F.col('position').alias('_subtitle'),
+        F.lit(None).cast('string').alias('_extra')
+    ))
+    return [r.asDict(recursive=True) for r in out.collect()]
 
 def _resolve_team_id(token: str) -> Optional[int]:
     """Resolve a team identifier from id or name/city token."""
@@ -633,3 +786,4 @@ def outcome_status():
     except Exception as e:
         result["error"] = str(e)
     return result
+
