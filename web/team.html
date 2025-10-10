@@ -7,8 +7,9 @@
     <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body>
-    <div class="topbar"><div class="inner"><div class="brand">NBA Search</div><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
+    <div class="topbar"><div class="inner"><a class="brand" href="/" onclick="if (location.protocol==='file:'){location.href='index.html'; return false;}">NBA Search</a><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
     <div class="wrap"><div id="content" class="card">Loading...</div></div>
+    <script src="/static/app.js"></script>
     <script>
       function getId(){ const m=location.pathname.match(/\/team\/(.+)$/); if(m) return decodeURIComponent(m[1]); const u=new URL(location.href); return u.searchParams.get('id');}
       async function load(){ const id=getId(); const el=document.getElementById('content'); if(!id){ el.textContent='Missing team id'; return; }
@@ -25,3 +26,5 @@
     </script>
   </body>
 </html>
+
+

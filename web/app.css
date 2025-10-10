@@ -15,8 +15,8 @@ body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 
 
 /* Header */
 .topbar { position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px); background: linear-gradient(180deg, rgba(18,24,33,.9), rgba(18,24,33,.6)); border-bottom: 1px solid var(--border); }
-.topbar .inner { max-width: 1100px; margin: 0 auto; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
-.brand { font-weight: 900; letter-spacing: .4px; font-size: 26px; line-height: 1; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.topbar .inner { width: 100%; max-width: none; margin: 0; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+.brand { font-weight: 900; letter-spacing: .4px; font-size: 26px; line-height: 1; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; text-decoration: none; display: inline-block; cursor: pointer; }
 .nav { margin-left: auto; display: flex; gap: 12px; }
 .nav a { color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 8px; transition: .2s ease; }
 .nav a:hover { color: var(--fg); background: rgba(255,255,255,.04); }
@@ -35,6 +35,7 @@ body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 
 .home { display: grid; grid-template-columns: 1.4fr .8fr; gap: 16px; margin-top: 18px; }
 .home .section { background: linear-gradient(180deg, var(--card), #0d141d); border: 1px solid var(--border); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
 .home .section .title { font-size: 16px; font-weight: 800; margin-bottom: 8px; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { padding: 8px 10px; background: #111927; border: 1px solid var(--border); border-radius: 999px; cursor: pointer; color: var(--fg); font-size: 13px; }
 .chip:hover { background: rgba(255,255,255,.06); }
@@ -49,6 +50,8 @@ body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 
 .search-box { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
 .search-box .input { width: 100%; font-size: 16px; padding: 12px 14px; }
 .card { background: linear-gradient(180deg, var(--card), #0d141d); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; align-items: center; gap: 12px; box-shadow: var(--shadow); animation: fadeIn .25s ease both; }
+/* Small entity badge used in results */
+.badge { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; text-transform: uppercase; }
 
 /* Suggestions */
 .suggest { position: absolute; left: 0; right: 0; top: calc(100% + 8px); background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; z-index: 40; max-height: 320px; overflow-y: auto; box-shadow: var(--shadow); animation: pop .12s ease-out both; }

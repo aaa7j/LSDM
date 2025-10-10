@@ -7,11 +7,12 @@
     <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body>
-    <div class="topbar"><div class="inner"><div class="brand">NBA Search</div><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
+    <div class="topbar"><div class="inner"><a class="brand" href="/" onclick="if (location.protocol==='file:'){location.href='index.html'; return false;}">NBA Search</a><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
     <div class="wrap">
       <div id="head" class="card" style="display:grid; gap:6px; align-items:flex-start;"></div>
       <div id="h2h" class="card" style="margin-top:12px; display:grid; gap:8px;"></div>
     </div>
+    <script src="/static/app.js"></script>
     <script>
       function getParams(){
         const m = location.pathname.match(/\/game\/(.+)$/);
@@ -76,3 +77,5 @@
     </script>
   </body>
 </html>
+
+
