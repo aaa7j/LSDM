@@ -15,8 +15,8 @@ body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 
 
 /* Header */
 .topbar { position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px); background: linear-gradient(180deg, rgba(18,24,33,.9), rgba(18,24,33,.6)); border-bottom: 1px solid var(--border); }
-.topbar .inner { max-width: 980px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
-.brand { font-weight: 800; letter-spacing: .3px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.topbar .inner { max-width: 1100px; margin: 0 auto; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+.brand { font-weight: 900; letter-spacing: .4px; font-size: 26px; line-height: 1; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .nav { margin-left: auto; display: flex; gap: 12px; }
 .nav a { color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 8px; transition: .2s ease; }
 .nav a:hover { color: var(--fg); background: rgba(255,255,255,.04); }
@@ -31,11 +31,27 @@ body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 
 .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(62,166,255,.18); }
 
 /* Containers */
-.wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+.wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+.home { display: grid; grid-template-columns: 1.4fr .8fr; gap: 16px; margin-top: 18px; }
+.home .section { background: linear-gradient(180deg, var(--card), #0d141d); border: 1px solid var(--border); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
+.home .section .title { font-size: 16px; font-weight: 800; margin-bottom: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { padding: 8px 10px; background: #111927; border: 1px solid var(--border); border-radius: 999px; cursor: pointer; color: var(--fg); font-size: 13px; }
+.chip:hover { background: rgba(255,255,255,.06); }
+.list { display: grid; gap: 6px; font-size: 13px; }
+.list a { color: var(--accent); text-decoration: none; }
+.list a:hover { text-decoration: underline; }
+.standings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
+.standings .conf { background: #0e1722; border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+.standings .conf .title { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.standings .team { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #1c2a3c; }
+.standings .team:last-child { border-bottom: 0; }
+.search-box { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.search-box .input { width: 100%; font-size: 16px; padding: 12px 14px; }
 .card { background: linear-gradient(180deg, var(--card), #0d141d); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; align-items: center; gap: 12px; box-shadow: var(--shadow); animation: fadeIn .25s ease both; }
 
 /* Suggestions */
-.suggest { position: absolute; left: 0; right: 0; top: 44px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; z-index: 20; max-height: 300px; overflow-y: auto; box-shadow: var(--shadow); animation: pop .12s ease-out both; }
+.suggest { position: absolute; left: 0; right: 0; top: calc(100% + 8px); background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; z-index: 40; max-height: 320px; overflow-y: auto; box-shadow: var(--shadow); animation: pop .12s ease-out both; }
 .s-item { padding: 10px 12px; cursor: pointer; display: grid; grid-template-columns: 80px 1fr; gap: 10px; align-items: center; transition: background .12s ease; }
 .s-item:hover, .s-item.active { background: rgba(255,255,255,.05); }
 .s-entity { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; text-transform: uppercase; text-align: center; }
@@ -58,4 +74,3 @@ body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 
 
 /* Mark highlight */
 mark { color: inherit; background: linear-gradient(90deg, rgba(62,166,255,.2), rgba(139,92,246,.2)); padding: 0 2px; border-radius: 3px; }
-

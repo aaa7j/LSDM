@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Game</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="topbar"><div class="inner"><div class="brand">NBA Search</div><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
+    <div class="wrap">
+      <div id="head" class="card" style="display:grid; gap:6px; align-items:flex-start;"></div>
+      <div id="h2h" class="card" style="margin-top:12px; display:grid; gap:8px;"></div>
+    </div>
+    <script>
+      function getParams(){
+        const m = location.pathname.match(/\/game\/(.+)$/);
+        const id = m ? decodeURIComponent(m[1]) : (new URL(location.href)).searchParams.get('id');
+        const url = new URL(location.href);
+        const page = parseInt(url.searchParams.get('page')||'0', 10) || 0;
+        const size = parseInt(url.searchParams.get('size')||'5', 10) || 5;
+        return { id, page, size };
+      }
+      function navTo(page){
+        const {id, size} = getParams();
+        const qp = new URLSearchParams({ page: String(page), size: String(size) });
+        location.href = `/game/${encodeURIComponent(id)}?${qp.toString()}`;
+      }
+      function el(tag, cls, text){ const d=document.createElement(tag); if(cls) d.className=cls; if(text!=null) d.textContent=text; return d; }
+      async function load(){
+        const { id, page, size } = getParams();
+        const head = document.getElementById('head');
+        const h2h = document.getElementById('h2h');
+        head.innerHTML = 'Loading...'; h2h.innerHTML='';
+        if(!id){ head.textContent = 'Missing game id'; return; }
+        try{
+          const res = await fetch(`/entity/game/${encodeURIComponent(id)}?page=${page}&size=${size}`);
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          const d = await res.json();
+          if(d.error){ head.textContent = d.error; return; }
+          // Headline / scoreboard
+          head.innerHTML='';
+          const title = el('div','title', `${d.home || d.home_id} vs ${d.away || d.away_id}`);
+          const sub = el('div','sub', `${d.date || ''}${d.location? ' · '+d.location: ''}${d.attendance? ' · attendance '+d.attendance: ''}`);
+          const score = el('div','title', `${(d.home_pts??'-')} - ${(d.away_pts??'-')}`);
+          score.style.fontSize = '28px';
+          head.appendChild(title); head.appendChild(sub); head.appendChild(score);
+          // Per-period line score
+          if (Array.isArray(d.line) && d.line.length){
+            const tbl = document.createElement('table'); tbl.style.width='100%'; tbl.style.borderCollapse='collapse';
+            const th = document.createElement('tr'); th.innerHTML = '<th style="text-align:left">Period</th><th>Home</th><th>Away</th>';
+            tbl.appendChild(th);
+            d.line.forEach(r => { const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.period}</td><td style="text-align:center">${r.home_pts}</td><td style="text-align:center">${r.away_pts}</td>`; tbl.appendChild(tr); });
+            head.appendChild(tbl);
+          }
+          // H2H section
+          const htitle = el('div','title','Head-to-Head (recent)'); h2h.appendChild(htitle);
+          const nav = document.createElement('div'); nav.style.display='flex'; nav.style.justifyContent='space-between';
+          const left = el('button','btn secondary','◀'); left.disabled = page<=0; left.addEventListener('click', ()=> navTo(Math.max(0,page-1)));
+          const right = el('button','btn secondary','▶');
+          const total = Number(d.history_total||0); const hasMore = (page+1)*Number(d.history_size||size) < total;
+          right.disabled = !hasMore; right.addEventListener('click', ()=> navTo(page+1));
+          const info = el('div','sub', `Page ${page+1} · ${Math.min((page+1)*size,total)}/${total}`);
+          nav.appendChild(left); nav.appendChild(info); nav.appendChild(right); h2h.appendChild(nav);
+          const list = document.createElement('div'); list.style.display='grid'; list.style.gap='6px';
+          (d.history||[]).forEach(g => {
+            const row = document.createElement('div'); row.className='card'; row.style.cursor='pointer';
+            row.textContent = `${g.date} — ${g.home} ${g.home_pts} - ${g.away_pts} ${g.away}`;
+            row.addEventListener('click', ()=> { location.href = `/game/${encodeURIComponent(g.id)}`; });
+            list.appendChild(row);
+          });
+          h2h.appendChild(list);
+        }catch(e){ head.textContent = 'Error: '+(e.message||e); }
+      }
+      load();
+    </script>
+  </body>
+</html>

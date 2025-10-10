@@ -26,6 +26,7 @@
       <div class="meta" id="meta"></div>
       <div class="error" id="err"></div>
       <div class="results" id="results"></div>
+      <div id="detail" class="card" style="display:none; position: fixed; right: 20px; bottom: 20px; max-width: 420px; z-index: 10;"></div>
       <footer style="margin: 28px 0; color: var(--muted); font-size: 12px;">
         Minimal UI. Results powered by the local FastAPI service.
       </footer>
@@ -39,7 +40,23 @@
       const err = document.getElementById('err');
       const results = document.getElementById('results');
       const sugg = document.getElementById('sugg');
+      // stable suggest state (keeps last good results across small typos)
+      let lastGoodQuery = '';
+      let lastGoodItems = [];
+      let activeSuggestReq = 0;
 
+      function openEntity(it) {
+        if (!it || !it._entity || !it._id) return;
+        let path = "/";
+        if (it._entity === "player") path = `/player/${encodeURIComponent(it._id)}`;
+        else if (it._entity === "team") path = `/team/${encodeURIComponent(it._id)}`;
+        else if (it._entity === "game") path = `/game/${encodeURIComponent(it._id)}`;
+        else if (it._entity === "matchup") {
+          const parts = String(it._id).split('-');
+          if (parts.length === 2) path = `/matchup/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`;
+        }
+        window.location.href = path;
+      }
       function renderItems(items) {
         results.innerHTML = '';
         if (!items || items.length === 0) {
@@ -67,6 +84,9 @@
           if (extra.textContent) box.appendChild(extra);
           div.appendChild(badge);
           div.appendChild(box);
+          // click to open details
+          div.style.cursor = 'pointer';
+          div.addEventListener('click', () => openEntity(it));
           results.appendChild(div);
         }
       }
@@ -107,34 +127,66 @@
           const s = document.createElement('div'); s.className = 's-sub'; s.innerHTML = highlight(it._subtitle || '', q.value);
           box.appendChild(t); if (s.textContent) box.appendChild(s);
           div.appendChild(badge); div.appendChild(box);
-          div.addEventListener('mousedown', (ev) => { ev.preventDefault(); q.value = (it._title || it._id || '').toString(); sugg.style.display='none'; doSearch(q.value); });
+          div.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            q.value = (it._title || it._id || '').toString();
+            sugg.style.display='none';
+            if (it && it._entity && it._id) {
+              openEntity(it);
+            } else {
+              doSearch(q.value);
+            }
+          });
           sugg.appendChild(div);
         });
         sugg.style.display = 'block';
       }
 
-      // Instant suggest with small debounce refresh
+      // Instant suggest with small debounce refresh + stability on typos
       let suggestTimer = null;
       q.addEventListener('input', () => {
         const text = (q.value || '').trim();
-        if (!text) { if (suggestTimer) clearTimeout(suggestTimer); sugg.style.display='none'; return; }
-        (async () => {
+        if (!text) {
+          if (suggestTimer) clearTimeout(suggestTimer);
+          sugg.style.display = 'none';
+          sugg.innerHTML = '';
+          lastGoodQuery = '';
+          lastGoodItems = [];
+          return;
+        }
+
+        const myReq = ++activeSuggestReq;
+
+        const fetchAndRender = async () => {
           try {
-            const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&limit=15`, { headers: { 'accept':'application/json' } });
-            if (!res.ok) throw new Error('HTTP '+res.status);
+            // prefer matchup suggestions for 'vs' or '@'
+            const looksMatchup = /\s(?:vs\.?|@|v)\s/i.test(text);
+            const url = looksMatchup ? `/suggest-matchup?q=${encodeURIComponent(text)}&limit=15` : `/suggest?q=${encodeURIComponent(text)}&limit=15`;
+            const res = await fetch(url, { headers: { 'accept': 'application/json' } });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
-            renderSuggest((data.items || []).slice(0, 12));
-          } catch (e) {}
-        })();
+            // ignore stale responses
+            if (myReq !== activeSuggestReq) return;
+            const items = (data.items || []).slice(0, 12);
+            if ((items.length === 0) && lastGoodItems.length) {
+              // keep previous good suggestions if this keystroke produced none
+              renderSuggest(lastGoodItems);
+            } else {
+              renderSuggest(items);
+              if (items.length) {
+                lastGoodItems = items;
+                lastGoodQuery = text;
+              }
+            }
+          } catch (e) {
+            // ignore errors for suggest, keep previous if any
+          }
+        };
+
+        // quick probe + debounced confirm
+        fetchAndRender();
         if (suggestTimer) clearTimeout(suggestTimer);
-        suggestTimer = setTimeout(async () => {
-          try {
-            const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&limit=15`, { headers: { 'accept':'application/json' } });
-            if (!res.ok) throw new Error('HTTP '+res.status);
-            const data = await res.json();
-            renderSuggest((data.items || []).slice(0, 12));
-          } catch {}
-        }, 60);
+        suggestTimer = setTimeout(fetchAndRender, 120);
       });
 
       // keyboard navigation for suggestions
@@ -169,3 +221,6 @@
     </script>
   </body>
 </html>
+
+
+

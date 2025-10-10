@@ -1,14 +1,165 @@
-﻿"""
+﻿from __future__ import annotations
+
+
+
+# --- In-memory suggest globals & helpers ---
+import re
+import difflib
+
+_MEM_PLAYERS = []  # list of dicts
+_MEM_TEAMS = []    # list of dicts
+
+def _norm(s: str) -> str:
+    import re as _re
+    s = (s or "").lower().strip()
+    s = _re.sub(r"[^a-z0-9 ]+", " ", s)
+    s = _re.sub(r"\\s+", " ", s)
+    return s
+
+def _build_mem_indexes(spark):
+    global _MEM_PLAYERS, _MEM_TEAMS
+    try:
+        pdf = (
+            spark.table("GLOBAL_PLAYER")
+            .select(
+                F.col("player_id").cast("string").alias("id"),
+                F.col("full_name").alias("title"),
+                F.col("position").alias("subtitle"),
+            )
+        )
+        _MEM_PLAYERS = [
+            {
+                "_entity": "player",
+                "_id": r["id"],
+                "_title": r["title"],
+                "_subtitle": r["subtitle"],
+                "_extra": None,
+                "_norm": _norm(str(r["title"] or "")),
+            }
+            for r in pdf.collect()
+            if (r["id"] is not None and r["title"])
+        ]
+    except Exception as e:
+        print(f"[WARN] Could not build _MEM_PLAYERS: {e}")
+        _MEM_PLAYERS = []
+    try:
+        tdf = (
+            spark.table("GLOBAL_TEAM")
+            .select(
+                F.col("team_id").cast("string").alias("id"),
+                F.col("team_name").alias("title"),
+                F.col("city").alias("subtitle"),
+            )
+        )
+        _MEM_TEAMS = [
+            {
+                "_entity": "team",
+                "_id": r["id"],
+                "_title": r["title"],
+                "_subtitle": r["subtitle"],
+                "_extra": None,
+                "_norm": _norm(f"{str(r['subtitle'] or '')} {str(r['title'] or '')}"),
+            }
+            for r in tdf.collect()
+            if (r["id"] is not None and r["title"])
+        ]
+    except Exception as e:
+        print(f"[WARN] Could not build _MEM_TEAMS: {e}")
+        _MEM_TEAMS = []
+
+def _looks_game_query(q: str) -> bool:
+    """Heuristics to detect a game-like query (matchup/date/id)."""
+    ql = (q or "").lower().strip()
+    if not ql:
+        return False
+    if ' vs ' in ql or ' @ ' in ql:
+        return True
+    import re as _re
+    if _re.search(r"\b(19|20)\d{2}([\-/]\d{1,2}([\-/]\d{1,2})?)?\b", ql):
+        return True
+    digits = ''.join(c for c in ql if c.isdigit())
+    return len(digits) >= 6
+
+def _mem_rank(items, q, limit):
+    if not items:
+        return []
+    qn = _norm(q)
+    if not qn:
+        return []
+    toks = [t for t in qn.split(" ") if t]
+    rev = " ".join(reversed(toks)) if toks else qn
+    # Dynamic acceptance threshold to avoid irrelevant team spam
+    if len(toks) >= 2:
+        r_cut = 0.65
+    elif len(qn) <= 2:
+        r_cut = 0.75
+    else:
+        r_cut = 0.6
+    ranked = []
+    for it in items:
+        name = it.get("_norm") or _norm(str(it.get("_title") or ""))
+        pref = sum(1 for t in toks if name.startswith(t))
+        cont = sum(1 for t in toks if t in name)
+        r1 = difflib.SequenceMatcher(None, name, qn).ratio()
+        r2 = difflib.SequenceMatcher(None, name, rev).ratio()
+        r = max(r1, r2)
+        # require meaningful match: prefix/contains or decent ratio
+        if pref == 0 and cont == 0 and r < r_cut:
+            continue
+        score = (pref * 5.0) + (cont * 2.0) + (r * 50.0)
+        ranked.append((score, it))
+    if not ranked:
+        return []
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    out = []
+    for sc, it in ranked[:limit]:
+        o = {k: v for k, v in it.items() if k != "_norm"}
+        o["_score"] = float(sc)
+        out.append(o)
+    return out
+
+def _quick_suggest(q, limit, entity):
+    ent = (entity or "").lower().strip()
+    # Let Spark handle game-like queries or explicit game entity
+    if ent == "game" or _looks_game_query(q):
+        return []
+    if ent == "player":
+        return _mem_rank(_MEM_PLAYERS, q, limit)
+    if ent == "team":
+        return _mem_rank(_MEM_TEAMS, q, limit)
+    tokens = re.findall(r"[A-Za-z0-9]+", q.lower())
+    alpha_tokens = [t for t in tokens if not t.isdigit()]
+    prefer_players = len(alpha_tokens) >= 2
+    if prefer_players:
+        per_p = max(5, int(round(limit * 0.7)))
+        p = _mem_rank(_MEM_PLAYERS, q, per_p)
+        t = _mem_rank(_MEM_TEAMS, q, max(0, limit - len(p)))
+        items = p + t
+    else:
+        per_t = max(3, int(round(limit * 0.5)))
+        t = _mem_rank(_MEM_TEAMS, q, per_t)
+        p = _mem_rank(_MEM_PLAYERS, q, max(0, limit - len(t)))
+        items = t + p
+    seen=set(); out=[]
+    for it in items:
+        key=(it.get("_entity"), it.get("_id"))
+        if key in seen: continue
+        seen.add(key); out.append(it)
+        if len(out)>=limit: break
+    return out
+
+
+"""
 FastAPI search service that keeps a single longâ€‘lived PySpark session.
 
 Notes
 - Spark is created on FastAPI startup and stopped on shutdown.
 - GLOBAL_* tables are loaded from the local Parquet warehouse and cached.
 """
-from __future__ import annotations
 
 import os
 from typing import Dict, List, Optional
+import re
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -362,6 +513,12 @@ def _on_startup():
         print(f"[OK] Popularity maps loaded (players={len(_POP_PLAYER)}, teams={len(_POP_TEAM)})")
     except Exception as e:
         print(f"[WARN] Popularity maps not loaded: {e}")
+    # Build fast in-memory indexes for instant suggestions
+    try:
+        _build_mem_indexes(spark)
+        print(f"[OK] In-memory suggest indexes ready (players={len(_MEM_PLAYERS)}, teams={len(_MEM_TEAMS)})")
+    except Exception as e:
+        print(f"[WARN] Could not build in-memory indexes: {e}")
     # Load model if present; otherwise keep unavailable (no training here)
     try:
         model_path_ok = os.path.isdir(MODEL_DIR) and os.path.isdir(os.path.join(MODEL_DIR, "stages"))
@@ -418,7 +575,14 @@ def search(
     if spark is None:
         return {"total": 0, "items": [], "meta": {"query": q, "notes": "service starting"}}
     rows, meta = run_query(spark, q.strip(), top_n=limit)
-    return {"total": len(rows), "items": rows, "meta": meta}
+    # Ensure UI field compatibility: map 'title' -> '_title' when needed
+    norm_items = []
+    for it in rows or []:
+        if isinstance(it, dict):
+            if "_title" not in it and "title" in it:
+                it = {**it, "_title": it.get("title")}
+        norm_items.append(it)
+    return {"total": len(norm_items), "items": norm_items, "meta": meta}
 
 
 @app.get("/suggest")
@@ -448,9 +612,17 @@ def suggest(
 
     rows: list[dict] = []
     ent = (entity or '').strip().lower()
+    # quick in-memory fast path
+    try:
+        fast = _quick_suggest(q2, limit, entity)
+        if fast:
+            _SUGGEST_CACHE[key] = (now, fast)
+            return {"items": fast}
+    except Exception:
+        pass
     try:
         if ent == 'team':
-            df = search_engine._candidate_teams(spark, q2, limit=limit)  # noqa: SLF001
+            df = search_engine.candidate_teams(spark, q2, limit=limit)  # noqa: SLF001
             df2 = (df
                    .select(
                        F.lit('team').alias('_entity'),
@@ -462,7 +634,7 @@ def suggest(
                    ))
             rows = [r.asDict(recursive=True) for r in df2.collect()]
         elif ent == 'player':
-            df = search_engine._candidate_players(spark, q2, limit=limit)  # noqa: SLF001
+            df = search_engine.candidate_players(spark, q2, limit=limit)  # noqa: SLF001
             df2 = (df
                    .select(
                        F.lit('player').alias('_entity'),
@@ -474,66 +646,98 @@ def suggest(
                    ))
             rows = [r.asDict(recursive=True) for r in df2.collect()]
         elif ent == 'game':
-            df = search_engine._candidate_games(spark, q2, limit=limit)  # noqa: SLF001
-            df2 = (df
-                   .select(
-                       F.lit('game').alias('_entity'),
-                       F.col('_score'),
-                       F.col('game_id').cast('string').alias('_id'),
-                       F.concat_ws(' vs ', F.coalesce(F.col('home_name'), F.col('home_team_id')), F.coalesce(F.col('away_name'), F.col('away_team_id'))).alias('_title'),
-                       F.col('game_date').cast('string').alias('_subtitle'),
-                       F.concat_ws(' - ', F.col('final_score_home').cast('string'), F.col('final_score_away').cast('string')).alias('_extra')
-                   ))
+            df = search_engine.candidate_games(spark, q2, limit=limit)  # noqa: SLF001
+            df2 = (df.select(
+                F.lit('game').alias('_entity'),
+                F.col('_score'),
+                F.col('_id'),
+                F.col('title').alias('_title'),
+                F.lit(None).cast('string').alias('_subtitle'),
+                F.lit(None).cast('string').alias('_extra')
+            ))
             rows = [r.asDict(recursive=True) for r in df2.collect()]
         else:
-            # Default: balanced quick suggest across entities for responsiveness
+            # Heuristic: if query looks like a person name (>=2 alpha tokens), fetch players first
+            tokens = re.findall(r"[A-Za-z0-9]+", q2.lower())
+            alpha_tokens = [t for t in tokens if not t.isdigit()]
+            prefer_players = len(alpha_tokens) >= 2
+
             per = max(3, int(math.ceil(limit / 3)))
             items: list[dict] = []
-            # teams
-            try:
-                tdf = search_engine._candidate_teams(spark, q2, limit=per)  # noqa: SLF001
-                tdf2 = tdf.select(
-                    F.lit('team').alias('_entity'), F.col('_score'),
-                    F.col('team_id').cast('string').alias('_id'),
-                    F.col('team_name').alias('_title'), F.col('city').alias('_subtitle'), F.lit(None).cast('string').alias('_extra'))
-                items += [r.asDict(recursive=True) for r in tdf2.collect()]
-            except Exception:
-                pass
-            # players
-            try:
-                pdf = search_engine._candidate_players(spark, q2, limit=per)  # noqa: SLF001
-                pdf2 = pdf.select(
-                    F.lit('player').alias('_entity'), F.col('_score'),
-                    F.col('player_id').cast('string').alias('_id'),
-                    F.col('full_name').alias('_title'), F.col('position').alias('_subtitle'), F.lit(None).cast('string').alias('_extra'))
-                items += [r.asDict(recursive=True) for r in pdf2.collect()]
-            except Exception:
-                pass
-            # optionally add a few games only if query looks like a matchup
-            ql = q2.lower()
-            looks_matchup = (' vs ' in ql) or (' @ ' in ql) or ql.count('vs') == 1 or ql.count('@') == 1
-            if looks_matchup:
+
+            def pull_teams() -> list[dict]:
                 try:
-                    gdf = search_engine._candidate_games(spark, q2, limit=max(2, limit//4))  # noqa: SLF001
-                    gdf2 = gdf.select(
-                        F.lit('game').alias('_entity'), F.col('_score'),
-                        F.col('game_id').cast('string').alias('_id'),
-                        F.concat_ws(' vs ', F.coalesce(F.col('home_name'), F.col('home_team_id')), F.coalesce(F.col('away_name'), F.col('away_team_id'))).alias('_title'),
-                        F.col('game_date').cast('string').alias('_subtitle'),
-                        F.concat_ws(' - ', F.col('final_score_home').cast('string'), F.col('final_score_away').cast('string')).alias('_extra'))
-                    items += [r.asDict(recursive=True) for r in gdf2.collect()]
+                    tdf = search_engine.candidate_teams(spark, q2, limit=per)  # noqa: SLF001
+                    tdf2 = tdf.select(
+                        F.lit('team').alias('_entity'), F.col('_score'),
+                        F.col('team_id').cast('string').alias('_id'),
+                        F.col('team_name').alias('_title'), F.col('city').alias('_subtitle'), F.lit(None).cast('string').alias('_extra'))
+                    return [r.asDict(recursive=True) for r in tdf2.collect()]
                 except Exception:
-                    pass
-            # sort by score desc and clip; slight bias: teams > players > games
+                    return []
+
+            def pull_players() -> list[dict]:
+                try:
+                    pdf = search_engine.candidate_players(spark, q2, limit=per)  # noqa: SLF001
+                    pdf2 = pdf.select(
+                        F.lit('player').alias('_entity'), F.col('_score'),
+                        F.col('player_id').cast('string').alias('_id'),
+                        F.col('full_name').alias('_title'), F.col('position').alias('_subtitle'), F.lit(None).cast('string').alias('_extra'))
+                    return [r.asDict(recursive=True) for r in pdf2.collect()]
+                except Exception:
+                    return []
+
+            def pull_games() -> list[dict]:
+                if not _looks_game_query(q2):
+                    return []
+                try:
+                    gdf = search_engine.candidate_games(spark, q2, limit=max(3, limit//3))  # noqa: SLF001
+                    gdf2 = gdf.select(
+                        F.lit('game').alias('_entity'),
+                        F.col('_score'),
+                        F.col('_id'),
+                        F.col('title').alias('_title'),
+                        F.lit(None).cast('string').alias('_subtitle'),
+                        F.lit(None).cast('string').alias('_extra')
+                    )
+                    return [r.asDict(recursive=True) for r in gdf2.collect()]
+                except Exception:
+                    return []
+
+            if prefer_players:
+                items += pull_players() + pull_teams() + pull_games()
+            else:
+                items += pull_teams() + pull_players() + pull_games()
+
+            # sort by score desc and clip; slight bias: players > teams > games when person-like query
             def rank_key(x: dict):
                 typ = x.get('_entity')
-                type_boost = 0.02 if typ == 'team' else (0.01 if typ == 'player' else 0.0)
-                return (x.get('_score') is not None, float(x.get('_score') or 0.0) + type_boost)
+                base_boost = 0.02 if typ == 'team' else (0.01 if typ == 'player' else 0.0)
+                if prefer_players:
+                    base_boost = 0.02 if typ == 'player' else (0.01 if typ == 'team' else 0.0)
+                return (x.get('_score') is not None, float(x.get('_score') or 0.0) + base_boost)
             rows = sorted(items, key=rank_key, reverse=True)[:limit]
     except Exception:
         rows = []
 
     # Popularity-aware re-ranking
+    # Fuzzy fallback if few/no rows (e.g., "michaek jordan")
+    try:
+        need_fuzzy = (not rows) or (len(rows) < max(3, limit // 3))
+        if need_fuzzy:
+            # Prefer players for name-like queries
+            pf = _fuzzy_players_suggest(spark, q2, limit=max(limit, 10))
+            tf = _fuzzy_teams_suggest(spark, q2, limit=max(2, limit // 2))
+            # Merge, keep best score per id/entity
+            tmp = {}
+            for it in (pf + tf):
+                key = (it.get('_entity'), it.get('_id'))
+                if key not in tmp or float(it.get('_score') or 0) > float(tmp[key].get('_score') or 0):
+                    tmp[key] = it
+            rows = list(tmp.values())
+    except Exception:
+        pass
+
     if rows:
         boost_p = float(os.environ.get("SUGGEST_BOOST_PLAYER", "0.8"))
         boost_t = float(os.environ.get("SUGGEST_BOOST_TEAM", "0.6"))
@@ -563,6 +767,143 @@ def suggest(
     clipped = rows[:limit]
     _SUGGEST_CACHE[key] = (now, clipped)
     return {"items": clipped}
+
+# --- Entity detail endpoints ---
+@app.get("/entity/player/{pid}")
+def entity_player(pid: str):
+    if spark is None:
+        return {"error": "service starting"}
+    try:
+        df = spark.table("GLOBAL_PLAYER")
+        row = (df
+               .where(F.col("player_id").cast("string") == F.lit(pid))
+               .select(
+                   F.col("player_id").cast("string").alias("id"),
+                   F.col("full_name").alias("name"),
+                   F.col("first_name"), F.col("last_name"),
+                   F.col("position"), F.col("height"), F.col("weight"),
+                   F.col("birth_date"), F.col("nationality"), F.col("college"),
+                   F.col("experience"), F.col("team_id").cast("string").alias("team_id")
+               )
+               .limit(1).collect())
+        if not row:
+            return {"error": "not found", "id": pid}
+        rec = row[0].asDict(recursive=True)
+        # resolve team label
+        try:
+            t = spark.table("GLOBAL_TEAM").where(F.col("team_id").cast("string") == F.lit(rec.get("team_id")))
+            trow = t.select(F.col("team_name").alias("team_name"), F.col("city").alias("team_city")).limit(1).collect()
+            if trow:
+                rec["team"] = {"id": rec.get("team_id"), "name": trow[0]["team_name"], "city": trow[0]["team_city"]}
+        except Exception:
+            pass
+        return {"_entity": "player", **rec}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/entity/team/{tid}")
+def entity_team(tid: str):
+    if spark is None:
+        return {"error": "service starting"}
+    try:
+        df = spark.table("GLOBAL_TEAM")
+        row = (df.where(F.col("team_id").cast("string") == F.lit(tid))
+                 .select(F.col("team_id").cast("string").alias("id"), F.col("team_name").alias("name"), F.col("city"), F.col("conference"), F.col("division"), F.col("state"), F.col("arena"))
+                 .limit(1).collect())
+        if not row:
+            return {"error": "not found", "id": tid}
+        rec = row[0].asDict(recursive=True)
+        return {"_entity": "team", **rec}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/entity/game/{gid}")
+def entity_game(gid: str, page: int = Query(0, ge=0), size: int = Query(5, ge=1, le=50)):
+    if spark is None:
+        return {"error": "service starting"}
+    try:
+        g = spark.table("GLOBAL_GAME").where(F.col("game_id").cast("string") == F.lit(gid)).alias("g")
+        t = spark.table("GLOBAL_TEAM").select(F.col("team_id").alias("tid"), F.col("team_name").alias("tname"))
+        df = (g
+              .join(t.alias("h"), F.col("g.home_team_id") == F.col("h.tid"), "left")
+              .join(t.alias("a"), F.col("g.away_team_id") == F.col("a.tid"), "left"))
+        row = (df.select(
+                F.col("g.game_id").cast("string").alias("id"),
+                F.col("g.game_date").cast("date").alias("date"),
+                F.col("g.home_team_id").cast("string").alias("home_id"),
+                F.col("g.away_team_id").cast("string").alias("away_id"),
+                F.col("h.tname").alias("home"), F.col("a.tname").alias("away"),
+                F.col("g.final_score_home").alias("home_pts"), F.col("g.final_score_away").alias("away_pts"),
+                F.col("g.location").alias("location"), F.col("g.attendance").alias("attendance"), F.col("g.period_count").alias("period_count")
+             ).limit(1).collect())
+        if not row:
+            return {"error": "not found", "id": gid}
+        rec = row[0].asDict(recursive=True)
+
+        # Optional per-period line score
+        try:
+            if "GLOBAL_LINE_SCORE" in [tt.name for tt in spark.catalog.listTables()]:
+                ls = spark.table("GLOBAL_LINE_SCORE").alias("ls")
+                home_id = rec.get("home_id")
+                away_id = rec.get("away_id")
+                per = (ls.where(F.col("game_id").cast("string") == F.lit(gid))
+                        .groupBy("period")
+                        .agg(
+                            F.sum(F.when(F.col("team_id").cast("string") == F.lit(home_id), F.col("points")).otherwise(F.lit(0))).alias("home_pts"),
+                            F.sum(F.when(F.col("team_id").cast("string") == F.lit(away_id), F.col("points")).otherwise(F.lit(0))).alias("away_pts"),
+                        )
+                        .orderBy(F.col("period").asc()))
+                rec["line"] = [r.asDict(recursive=True) for r in per.collect()]
+        except Exception:
+            pass
+
+        # Head-to-head history (previous games only), paginated
+        try:
+            home_id = int(rec["home_id"]) if rec.get("home_id") is not None else None
+            away_id = int(rec["away_id"]) if rec.get("away_id") is not None else None
+            game_date = rec.get("date")
+            if home_id and away_id and game_date:
+                base = spark.table("GLOBAL_GAME").select(
+                    F.col("game_id").cast("string").alias("gid"),
+                    F.col("game_date").cast("date").alias("date"),
+                    F.col("home_team_id").cast("int").alias("home_team_id"),
+                    F.col("away_team_id").cast("int").alias("away_team_id"),
+                    F.col("final_score_home").alias("home_pts"),
+                    F.col("final_score_away").alias("away_pts"),
+                )
+                filt = (
+                    ((F.col("home_team_id") == F.lit(home_id)) & (F.col("away_team_id") == F.lit(away_id))) |
+                    ((F.col("home_team_id") == F.lit(away_id)) & (F.col("away_team_id") == F.lit(home_id)))
+                ) & (F.col("date") < F.lit(game_date))
+                h2h = base.where(filt)
+                tm = spark.table("GLOBAL_TEAM").select(F.col("team_id").alias("tid"), F.col("team_name").alias("tname"))
+                h2h = (h2h
+                       .join(tm.alias("h"), F.col("home_team_id") == F.col("h.tid"), "left")
+                       .join(tm.alias("a"), F.col("away_team_id") == F.col("a.tid"), "left"))
+                from pyspark.sql.window import Window
+                w = Window.orderBy(F.col("date").desc())
+                h2h = h2h.withColumn("rn", F.row_number().over(w))
+                start = page * size + 1
+                end = (page + 1) * size
+                page_df = (h2h.where((F.col("rn") >= F.lit(start)) & (F.col("rn") <= F.lit(end)))
+                               .select(
+                                   F.col("gid").alias("id"),
+                                   F.col("date").cast("string").alias("date"),
+                                   F.col("h.tname").alias("home"),
+                                   F.col("a.tname").alias("away"),
+                                   F.col("home_pts"), F.col("away_pts")
+                               ))
+                total = h2h.count()
+                rec["history"] = [r.asDict(recursive=True) for r in page_df.collect()]
+                rec["history_total"] = int(total)
+                rec["history_page"] = int(page)
+                rec["history_size"] = int(size)
+        except Exception:
+            pass
+
+        return {"_entity": "game", **{k: (v if k != "date" else str(v)) for k, v in rec.items()}}
+    except Exception as e:
+        return {"error": str(e)}
 
 # --------------------------
 # Fuzzy fallback (typo-tolerant)
@@ -742,6 +1083,131 @@ def predict_page():
     return FileResponse(index_path) if os.path.isfile(index_path) else {"message": "UI not found. Create web/predict.html."}
 
 
+@app.get("/player/{pid}")
+def player_page(pid: str):
+    path = os.path.join(static_dir, "player.html")
+    return FileResponse(path) if os.path.isfile(path) else {"message": "UI not found. Create web/player.html."}
+
+
+@app.get("/team/{tid}")
+def team_page(tid: str):
+    path = os.path.join(static_dir, "team.html")
+    return FileResponse(path) if os.path.isfile(path) else {"message": "UI not found. Create web/team.html."}
+
+
+@app.get("/game/{gid}")
+def game_page(gid: str):
+    path = os.path.join(static_dir, "game.html")
+    return FileResponse(path) if os.path.isfile(path) else {"message": "UI not found. Create web/game.html."}
+
+
+@app.get("/matchup/{home}/{away}")
+def matchup_page(home: str, away: str):
+    path = os.path.join(static_dir, "matchup.html")
+    return FileResponse(path) if os.path.isfile(path) else {"message": "UI not found. Create web/matchup.html."}
+
+
+@app.get("/suggest-matchup")
+def suggest_matchup(q: str = Query(...), limit: int = Query(10, ge=1, le=30)):
+    if spark is None:
+        return {"items": []}
+    text = (q or "").strip()
+    if not text:
+        return {"items": []}
+    import re as _re
+    parts = _re.split(r"\s+(?:vs\.?|@|v)\s+", text, maxsplit=1, flags=_re.IGNORECASE)
+    if len(parts) != 2:
+        return {"items": []}
+    left, right = parts[0].strip(), parts[1].strip()
+    if not left or not right:
+        return {"items": []}
+    a = _mem_rank(_MEM_TEAMS, left, min(5, max(3, limit//2)))
+    b = _mem_rank(_MEM_TEAMS, right, min(5, max(3, limit//2)))
+    # fallback via Spark if needed
+    def _spark_side(txt: str):
+        try:
+            t = (spark.table("GLOBAL_TEAM")
+                    .select(F.col("team_id").cast("string").alias("id"),
+                            F.col("team_name").alias("title"),
+                            F.col("city").alias("subtitle")))
+            t = t.where((F.lower(F.col("team_name")).contains(txt.lower())) | (F.lower(F.col("city")).contains(txt.lower())))
+            return [{"_entity":"team","_id":r["id"],"_title":r["title"],"_subtitle":r["subtitle"],"_score":1.0} for r in t.limit(5).collect()]
+        except Exception:
+            return []
+    if not a:
+        a = _spark_side(left)
+    if not b:
+        b = _spark_side(right)
+    pairs = []
+    seen = set()
+    for ta in a:
+        for tb in b:
+            key = (ta.get("_id"), tb.get("_id"))
+            if not key or key in seen or ta.get("_id") == tb.get("_id"):
+                continue
+            seen.add(key)
+            pairs.append({
+                "_entity": "matchup",
+                "_id": f"{ta.get('_id')}-{tb.get('_id')}",
+                "_title": f"{ta.get('_title')} vs {tb.get('_title')}",
+                "_subtitle": "Head-to-head",
+                "_extra": None,
+                "_score": float(ta.get("_score") or 0) + float(tb.get("_score") or 0)
+            })
+            if len(pairs) >= limit:
+                break
+        if len(pairs) >= limit:
+            break
+    return {"items": pairs}
+
+
+@app.get("/entity/head2head")
+def entity_head2head(
+    home: str = Query(..., description="Home team id"),
+    away: str = Query(..., description="Away team id"),
+    page: int = Query(0, ge=0),
+    size: int = Query(5, ge=1, le=50),
+):
+    if spark is None:
+        return {"items": []}
+    try:
+        h = int(home); a = int(away)
+    except Exception:
+        return {"error": "invalid team ids"}
+    try:
+        g = spark.table("GLOBAL_GAME").select(
+            F.col("game_id").cast("string").alias("id"),
+            F.col("game_date").cast("date").alias("date"),
+            F.col("home_team_id").cast("int").alias("home_id"),
+            F.col("away_team_id").cast("int").alias("away_id"),
+            F.col("final_score_home").alias("home_pts"),
+            F.col("final_score_away").alias("away_pts"),
+        )
+        filt = (((F.col("home_id") == F.lit(h)) & (F.col("away_id") == F.lit(a))) |
+                ((F.col("home_id") == F.lit(a)) & (F.col("away_id") == F.lit(h))))
+        base = g.where(filt)
+        tm = spark.table("GLOBAL_TEAM").select(F.col("team_id").alias("tid"), F.col("team_name").alias("tname"))
+        base = (base
+            .join(tm.alias("th"), F.col("home_id") == F.col("th.tid"), "left")
+            .join(tm.alias("ta"), F.col("away_id") == F.col("ta.tid"), "left"))
+        from pyspark.sql.window import Window
+        w = Window.orderBy(F.col("date").desc())
+        base = base.withColumn("rn", F.row_number().over(w))
+        start = page*size + 1; end = (page+1)*size
+        page_df = (base.where((F.col("rn")>=F.lit(start)) & (F.col("rn")<=F.lit(end)))
+                        .select(
+                            F.col("id"),
+                            F.col("date").cast("string").alias("date"),
+                            F.col("th.tname").alias("home"),
+                            F.col("ta.tname").alias("away"),
+                            F.col("home_pts"), F.col("away_pts")
+                        ))
+        total = base.count()
+        return {"items": [r.asDict(recursive=True) for r in page_df.collect()], "total": int(total), "page": int(page), "size": int(size)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/debug/outcome-status")
 def outcome_status():
     if spark is None:
@@ -786,4 +1252,8 @@ def outcome_status():
     except Exception as e:
         result["error"] = str(e)
     return result
+
+
+
+
 

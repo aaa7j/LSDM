@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Matchup</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="topbar"><div class="inner"><div class="brand">NBA Search</div><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
+    <div class="wrap">
+      <div id="content" class="card">Loading...</div>
+      <div id="h2h" class="card" style="margin-top:12px;"></div>
+    </div>
+    <script>
+      function getIds(){
+        const m = location.pathname.match(/\/matchup\/([^\/]+)\/([^\/]+)/);
+        if (m) return { home: decodeURIComponent(m[1]), away: decodeURIComponent(m[2]) };
+        const u = new URL(location.href); return { home: u.searchParams.get('home'), away: u.searchParams.get('away') };
+      }
+      function navTo(page){
+        const {home, away} = getIds();
+        const u = new URL(location.href);
+        u.searchParams.set('page', String(page));
+        location.href = `/matchup/${encodeURIComponent(home)}/${encodeURIComponent(away)}?${u.searchParams}`;
+      }
+      async function load(){
+        const ids = getIds();
+        const u = new URL(location.href);
+        const page = parseInt(u.searchParams.get('page')||'0',10)||0;
+        const size = 5;
+        const head = document.getElementById('content');
+        const list = document.getElementById('h2h');
+        head.textContent='Loading...'; list.innerHTML='';
+        if(!ids.home || !ids.away){ head.textContent='Missing team ids'; return; }
+        try{
+          const res = await fetch(`/entity/head2head?home=${encodeURIComponent(ids.home)}&away=${encodeURIComponent(ids.away)}&page=${page}&size=${size}`);
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          const d = await res.json();
+          if(d.error){ head.textContent = d.error; return; }
+          head.textContent = `Head-to-head: ${ids.home} vs ${ids.away}`;
+          const nav = document.createElement('div'); nav.style.display='flex'; nav.style.justifyContent='space-between';
+          const left = document.createElement('button'); left.className='btn secondary'; left.textContent='◀'; left.disabled = page<=0; left.onclick=()=>navTo(Math.max(0,page-1));
+          const right = document.createElement('button'); right.className='btn secondary'; right.textContent='▶';
+          const total = Number(d.total||0); const hasMore = (page+1)*Number(d.size||size) < total;
+          right.disabled = !hasMore; right.onclick=()=>navTo(page+1);
+          const info = document.createElement('div'); info.className='sub'; info.textContent = `Page ${page+1} · ${Math.min((page+1)*size,total)}/${total}`;
+          nav.appendChild(left); nav.appendChild(info); nav.appendChild(right); list.appendChild(nav);
+          (d.items||[]).forEach(g => {
+            const card = document.createElement('div'); card.className='card'; card.style.cursor='pointer';
+            card.textContent = `${g.date} — ${g.home} ${g.home_pts} - ${g.away_pts} ${g.away}`;
+            card.onclick = ()=> { location.href = `/game/${encodeURIComponent(g.id)}`; };
+            list.appendChild(card);
+          });
+        }catch(e){ head.textContent='Error: '+(e.message||e); }
+      }
+      load();
+    </script>
+  </body>
+  </html>

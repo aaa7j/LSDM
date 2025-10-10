@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Player</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="inner">
+        <div class="brand">NBA Search</div>
+        <div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div>
+      </div>
+    </div>
+    <div class="wrap">
+      <div id="content" class="card">Loading...</div>
+    </div>
+    <script>
+      function getId() {
+        const m = location.pathname.match(/\/player\/(.+)$/);
+        if (m) return decodeURIComponent(m[1]);
+        const u = new URL(location.href); return u.searchParams.get('id');
+      }
+      async function load() {
+        const id = getId();
+        const el = document.getElementById('content');
+        if (!id) { el.textContent = 'Missing player id'; return; }
+        try {
+          const res = await fetch(`/entity/player/${encodeURIComponent(id)}`);
+          if (!res.ok) throw new Error('HTTP '+res.status);
+          const d = await res.json();
+          if (d.error) { el.textContent = d.error; return; }
+          const box = document.createElement('div');
+          box.style.display = 'grid'; box.style.gap = '6px';
+          const title = document.createElement('div'); title.className = 'title'; title.textContent = d.name || d.id;
+          const sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = `${d.position||''} ${d.nationality? '· '+d.nationality:''}`.trim();
+          box.appendChild(title); if (sub.textContent) box.appendChild(sub);
+          const extra = document.createElement('div'); extra.className='extra';
+          extra.textContent = `Height: ${d.height||'-'}  |  Weight: ${d.weight||'-'}  |  College: ${d.college||'-'}  |  Exp: ${d.experience||'-'}`;
+          box.appendChild(extra);
+          if (d.team) {
+            const link = document.createElement('a'); link.href = `/team/${encodeURIComponent(d.team.id)}`; link.textContent = `Team: ${d.team.name || d.team.id}${d.team.city? ' ('+d.team.city+')':''}`; link.style.color='var(--accent)'; link.style.textDecoration='none';
+            box.appendChild(link);
+          }
+          el.innerHTML=''; el.appendChild(box);
+        } catch (e) {
+          el.textContent = 'Error: '+(e.message||e);
+        }
+      }
+      load();
+    </script>
+  </body>
+</html>
