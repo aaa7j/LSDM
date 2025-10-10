@@ -56,6 +56,15 @@
               <button id="btnH2H" class="btn">Go</button>
             </div>
           </div>
+          <div class="list" id="quick-links" style="margin-top:12px">
+            <div class="title">Quick Links</div>
+            <div class="chips">
+              <a class="chip" href="/?q=Los%20Angeles%20Lakers" data-team="Los Angeles Lakers">Lakers</a>
+              <a class="chip" href="/?q=Boston%20Celtics" data-team="Boston Celtics">Celtics</a>
+              <a class="chip" href="/?q=Golden%20State%20Warriors" data-team="Golden State Warriors">Warriors</a>
+              <a class="chip" href="/?q=Phoenix%20Suns" data-team="Phoenix Suns">Suns</a>
+            </div>
+          </div>
         </div>
         <div class="section">
           <div class="title">2024-25 NBA Standings</div>
@@ -81,14 +90,7 @@
             <button class="btn" id="tryPredict">Start Prediction</button>
             <a class="btn secondary" href="/?q=2024-06-19">Explore a game date</a>
           </div>
-          <div class="list" style="margin-top:12px">
-            <div class="title">Quick Links</div>
-            <a href="/?q=Los%20Angeles%20Lakers">Los Angeles Lakers</a>,
-            <a href="/?q=Boston%20Celtics">Boston Celtics</a>,
-            <a href="/?q=Golden%20State%20Warriors">Golden State Warriors</a>,
-            <a href="/?q=Phoenix%20Suns">Phoenix Suns</a>
           </div>
-        </div>
       </div>
 
       <div class="results" id="results"></div>
@@ -310,10 +312,18 @@
       });
             // trending list (players) -> direct player page\n      // Head-to-Head builder functions
       async function fetchTeamSuggest(text) {
-        const res = await fetch(/suggest?q=&entity=team&limit=10, { headers: { 'accept': 'application/json' } });
+        const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=team&limit=10`, { headers: { 'accept': 'application/json' } });
         if (!res.ok) return [];
         const data = await res.json();
-        return (data.items || []).filter(it => (it._entity||'') === 'team');
+        const raw = (data.items || []).filter(it => (it._entity||'') === 'team');
+const seen = new Set();
+return raw.filter(it => {
+  if (!it || !it._id) return false;
+  const k = `${it._entity}:${it._id}`;
+  if (seen.has(k)) return false;
+  seen.add(k);
+  return true;
+});
       }
       function renderTeamSuggest(container, input, items) {
         if (!items || items.length === 0) { container.style.display='none'; container.innerHTML=''; return; }
@@ -363,7 +373,13 @@
         if (hid && aid) { location.href = `/matchup/${encodeURIComponent(hid)}/${encodeURIComponent(aid)}`; }
         else { q.value = `${h} vs ${a}`; doSearch(q.value); }
       }
-      // wire h2h suggest + actions
+            // quick-links: open team pages directly
+      document.querySelectorAll('#quick-links a[data-team]').forEach(a => {
+        a.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          navigateTeamByName(a.getAttribute('data-team') || a.textContent || '');
+        });
+      });// wire h2h suggest + actions
       const hHome = document.getElementById('h2h-home');
       const hAway = document.getElementById('h2h-away');
       wireTeamSuggest(hHome, document.getElementById('sugg-h2h-home'));
@@ -385,6 +401,9 @@
     </script>
   </body>
 </html>
+
+
+
 
 
 
