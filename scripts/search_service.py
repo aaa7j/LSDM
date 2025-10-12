@@ -82,21 +82,21 @@ def _build_mem_indexes(spark: SparkSession):
             spark.table("GLOBAL_TEAM")
             .select(
                 F.col("team_id").cast("string").alias("id"),
-                F.col("team_name").alias("title"),
-                F.col("city").alias("subtitle"),
+                F.col("team_name").alias("name"),
+                F.col("city").alias("city"),
             )
         )
         _MEM_TEAMS = [
             {
                 "_entity": "team",
                 "_id": r["id"],
-                "_title": r["title"],
-                "_subtitle": r["subtitle"],
+                "_title": f"{(r['city'] or '').strip()} {(r['name'] or '').strip()}".strip(),
+                "_subtitle": None,
                 "_extra": None,
-                "_norm": _norm(f"{str(r['subtitle'] or '')} {str(r['title'] or '')}"),
+                "_norm": _norm(f"{str(r['city'] or '')} {str(r['name'] or '')}"),
             }
             for r in tdf.collect()
-            if (r["id"] is not None and r["title"])
+            if (r["id"] is not None and r["name"])
         ]
     except Exception as e:
         print(f"[WARN] Could not build _MEM_TEAMS: {e}")
@@ -852,9 +852,9 @@ def suggest(
                    .select(
                        F.lit('team').alias('_entity'),
                        F.col('_score'),
-                       F.col('team_id').cast('string').alias('_id'),
-                       F.col('team_name').alias('_title'),
-                       F.col('city').alias('_subtitle'),
+                       F.col('_id'),
+                       F.col('title').alias('_title'),
+                       F.lit(None).cast('string').alias('_subtitle'),
                        F.lit(None).cast('string').alias('_extra')
                    ))
             rows = [r.asDict(recursive=True) for r in df2.collect()]
@@ -894,9 +894,13 @@ def suggest(
                 try:
                     tdf = search_engine.candidate_teams(spark, q2, limit=per)  # noqa: SLF001
                     tdf2 = tdf.select(
-                        F.lit('team').alias('_entity'), F.col('_score'),
-                        F.col('team_id').cast('string').alias('_id'),
-                        F.col('team_name').alias('_title'), F.col('city').alias('_subtitle'), F.lit(None).cast('string').alias('_extra'))
+                        F.lit('team').alias('_entity'),
+                        F.col('_score'),
+                        F.col('_id'),
+                        F.col('title').alias('_title'),
+                        F.lit(None).cast('string').alias('_subtitle'),
+                        F.lit(None).cast('string').alias('_extra')
+                    )
                     return [r.asDict(recursive=True) for r in tdf2.collect()]
                 except Exception:
                     return []
@@ -1049,28 +1053,99 @@ def _fuzzy_players_suggest(spark: SparkSession, q: str, limit: int) -> list[dict
     return [r.asDict(recursive=True) for r in out.collect()]
 
 def _resolve_team_id(token: str) -> Optional[int]:
-    """Resolve a team identifier from id or name/city token."""
+    """Resolve a team identifier from id or free text.
+
+    Accepts numeric ids, or a variety of name inputs like
+    "Bulls", "Chicago", or "Chicago Bulls" (case-insensitive).
+    Uses fast in-memory index first, then Spark fallback.
+    """
     if spark is None:
         return None
-    t = spark.table("GLOBAL_TEAM")
-    # Numeric id
-    if token.isdigit():
-        val = int(token)
-        row = t.where(F.col("team_id") == val).select("team_id").limit(1).collect()
-        return int(row[0][0]) if row else None
-    # By name/city (case-insensitive contains)
-    token_l = token.strip().lower()
-    cand = (
-        t.select("team_id", "team_name", "city")
-         .where(
-            (F.lower(F.col("team_name")).contains(token_l)) |
-            (F.lower(F.col("city")).contains(token_l))
-         )
-         .orderBy(F.col("team_name").asc())
-         .limit(1)
-         .collect()
+    tok = (token or "").strip()
+    if not tok:
+        return None
+
+    # 1) Numeric id fast path (accept either numeric string or int-like)
+    if tok.isdigit():
+        try:
+            val = int(tok)
+        except Exception:
+            val = None
+        if val is not None:
+            t = spark.table("GLOBAL_TEAM")
+            row = (t.where(F.col("team_id").cast("int") == F.lit(val))
+                     .select("team_id").limit(1).collect())
+            return int(row[0][0]) if row else None
+
+    # 2) In-memory resolution against _MEM_TEAMS (City + Name normalized)
+    try:
+        if _MEM_TEAMS:
+            import difflib as _dl
+            qn = _norm(tok)
+            best_id: Optional[str] = None
+            best = 0.0
+            for it in _MEM_TEAMS:
+                cid = str(it.get("_id") or "").strip()
+                nm = it.get("_norm") or _norm(str(it.get("_title") or ""))
+                if not cid or not nm:
+                    continue
+                if nm == qn:
+                    return int(cid)
+                score = 0.0
+                if qn and nm.startswith(qn):
+                    score = 0.98
+                elif qn and qn in nm:
+                    score = 0.9
+                else:
+                    score = _dl.SequenceMatcher(None, nm, qn).ratio()
+                if score > best:
+                    best = score
+                    best_id = cid
+            if best_id is not None and best >= 0.72:
+                return int(best_id)
+    except Exception:
+        pass
+
+    # 3) Spark fallback: check team_name/city and also full name (city + name)
+    token_l = tok.lower()
+    t = spark.table("GLOBAL_TEAM").select(
+        F.col("team_id").cast("int").alias("team_id"),
+        F.col("team_name").alias("team_name"),
+        F.col("city").alias("city"),
+        F.concat_ws(" ", F.col("city"), F.col("team_name")).alias("full")
     )
-    return int(cand[0][0]) if cand else None
+
+    # Exact match on full first (normalized)
+    cand = (
+        t.where(F.lower(F.col("full")) == F.lit(token_l))
+         .select("team_id").limit(1).collect()
+    )
+    if cand:
+        return int(cand[0][0])
+
+    # Contains on any component
+    cand = (
+        t.where(
+            F.lower(F.col("team_name")).contains(F.lit(token_l)) |
+            F.lower(F.col("city")).contains(F.lit(token_l)) |
+            F.lower(F.col("full")).contains(F.lit(token_l))
+        )
+        .orderBy(F.col("team_name").asc())
+        .select("team_id").limit(1).collect()
+    )
+    if cand:
+        return int(cand[0][0])
+
+    # 4) Engine fallback (strongest): use the same candidate logic used by /suggest
+    try:
+        cdf = search_engine.candidate_teams(spark, tok, limit=1)  # type: ignore[arg-type]
+        rows = cdf.select(F.col("_id")).limit(1).collect()
+        if rows:
+            return int(rows[0][0])
+    except Exception:
+        pass
+
+    return None
 def _build_outcome_features_full(spark: SparkSession, home_id: int, away_id: int, cutoff: str):
     cutoff_date = F.to_date(F.lit(cutoff))
     tdd = spark.table("TEAM_DAILY_DIFF").select("team_id", "game_date", "diff")
@@ -1178,8 +1253,8 @@ def predict(
     team_df = spark.table("GLOBAL_TEAM").select("team_id", "team_name", "city")
     hname = team_df.where(F.col("team_id") == home_id).select("team_name", "city").limit(1).collect()
     aname = team_df.where(F.col("team_id") == away_id).select("team_name", "city").limit(1).collect()
-    home_label = (hname[0][0] or "") + (f" ({hname[0][1]})" if hname and hname[0][1] else "") if hname else str(home_id)
-    away_label = (aname[0][0] or "") + (f" ({aname[0][1]})" if aname and aname[0][1] else "") if aname else str(away_id)
+    home_label = (f"{(hname[0][1] or '').strip()} {(hname[0][0] or '').strip()}".strip()) if hname else str(home_id)
+    away_label = (f"{(aname[0][1] or '').strip()} {(aname[0][0] or '').strip()}".strip()) if aname else str(away_id)
 
     return {
         "home_team_id": home_id,
@@ -1283,10 +1358,10 @@ def suggest_matchup(q: str = Query(...), limit: int = Query(10, ge=1, le=30)):
         try:
             t = (spark.table("GLOBAL_TEAM")
                     .select(F.col("team_id").cast("string").alias("id"),
-                            F.col("team_name").alias("title"),
-                            F.col("city").alias("subtitle")))
+                            F.col("team_name").alias("name"),
+                            F.col("city").alias("city")))
             t = t.where((F.lower(F.col("team_name")).contains(txt.lower())) | (F.lower(F.col("city")).contains(txt.lower())))
-            return [{"_entity":"team","_id":r["id"],"_title":r["title"],"_subtitle":r["subtitle"],"_score":1.0} for r in t.limit(5).collect()]
+            return [{"_entity":"team","_id":r["id"],"_title":f"{(r['city'] or '').strip()} {(r['name'] or '').strip()}".strip(),"_subtitle":None,"_score":1.0} for r in t.limit(5).collect()]
         except Exception:
             return []
     if not a:
@@ -1841,6 +1916,7 @@ def standings(year: Optional[int] = Query(None, ge=1900, le=2100)):
     except Exception:
         pass
     return result
+
 
 
 

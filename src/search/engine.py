@@ -80,10 +80,12 @@ def _ensure_player_name_columns(df: DataFrame) -> DataFrame:
 def _ensure_team_name_columns(df: DataFrame) -> DataFrame:
     tn = _pick(df, "team_name", "TEAM_NAME")
     city = _pick(df, "team_city", "TEAM_CITY")
-    full = _pick(df, "full_name", "FULL_NAME")
-    df = df.withColumn("team_name", tn)\
-           .withColumn("team_city", city)\
-           .withColumn("full_name", Fcoalesce(full, concat_ws(" ", city, tn)))
+    # Force a consistent full name: City + Team name (avoid dataset variants like "Name (City)")
+    df = (df
+          .withColumn("team_name", tn)
+          .withColumn("team_city", city)
+          .withColumn("full_name", concat_ws(" ", city, tn))
+          )
 
     df = (df
           .withColumn("team_name_n", _norm_col(col("team_name")))
