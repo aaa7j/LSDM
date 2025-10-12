@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -17,7 +17,7 @@
       </div>
     </div>
     <div class="wrap">
-      <h1 class="fade-in">Search (players â€¢ teams â€¢ games)</h1>
+      <h1 class="fade-in">Search (players / teams / games)</h1>
       <form id="f" class="search-box" autocomplete="off">
         <input id="q" class="input" type="text" placeholder="e.g. Michael Jordan, Lakers 2010, 2016-06-19" autocomplete="off" aria-autocomplete="list" />
         <button id="btn" class="btn" type="submit">Search</button>
@@ -29,8 +29,7 @@
       <!-- Home sections (hidden when searching) -->
       <div id="home" class="home">
         <div class="section">
-          <div class="title">Every NBA Player</div>
-          
+          <div class="title">Most Popular Players</div>
           <div class="chips" id="chips-players">
             <div class="chip">LeBron James</div>
             <div class="chip">Stephen Curry</div>
@@ -40,7 +39,11 @@
             <div class="chip">Victor Wembanyama</div>
             <div class="chip">Giannis Antetokounmpo</div>
             <div class="chip">Jayson Tatum</div>
-          </div>          <div class="list" style="margin-top:12px">
+            <div class="chip">Kobe Bryant</div>
+            <div class="chip">Dirk Nowitzki</div>
+            <div class="chip">Allen Iverson</div>
+          </div>
+          <div class="list" style="margin-top:12px">
             <div class="title">Head-to-Head Builder</div>
             <div class="row" style="display:grid; grid-template-columns: 1fr 1fr auto; gap:8px; align-items:end;">
               <div class="rel">
@@ -57,40 +60,51 @@
             </div>
           </div>
           <div class="list" id="quick-links" style="margin-top:12px">
-            <div class="title">Quick Links</div>
+            <div class="title">Teams</div>
             <div class="chips">
               <a class="chip" href="/?q=Los%20Angeles%20Lakers" data-team="Los Angeles Lakers">Lakers</a>
               <a class="chip" href="/?q=Boston%20Celtics" data-team="Boston Celtics">Celtics</a>
               <a class="chip" href="/?q=Golden%20State%20Warriors" data-team="Golden State Warriors">Warriors</a>
               <a class="chip" href="/?q=Phoenix%20Suns" data-team="Phoenix Suns">Suns</a>
+              <a class="chip" href="/?q=Milwaukee%20Bucks" data-team="Milwaukee Bucks">Bucks</a>
+              <a class="chip" href="/?q=Philadelphia%2076ers" data-team="Philadelphia 76ers">76ers</a>
+              <a class="chip" href="/?q=New%20York%20Knicks" data-team="New York Knicks">Knicks</a>
+              <a class="chip" href="/?q=Miami%20Heat" data-team="Miami Heat">Heat</a>
+              <a class="chip" href="/?q=Dallas%20Mavericks" data-team="Dallas Mavericks">Mavericks</a>
+              <a class="chip" href="/?q=Denver%20Nuggets" data-team="Denver Nuggets">Nuggets</a>
+              <a class="chip" href="/?q=Los%20Angeles%20Clippers" data-team="Los Angeles Clippers">Clippers</a>
+              <a class="chip" href="/?q=Chicago%20Bulls" data-team="Chicago Bulls">Bulls</a>
+            </div>
+          </div>
+          <div class="list" id="predict-inline" style="margin-top:12px">
+            <div class="title">Prediction</div>
+            <div class="row" style="display:grid; grid-template-columns: 1fr 1fr auto; gap:8px; align-items:end;">
+              <div class="rel">
+                <label class="sub" for="pred-home" style="display:block;margin:0 0 4px;">Home team</label>
+                <input id="pred-home" class="input" type="text" placeholder="e.g. Lakers" autocomplete="off" aria-autocomplete="list" />
+                <div id="sugg-pred-home" class="suggest" style="display:none"></div>
+              </div>
+              <div class="rel">
+                <label class="sub" for="pred-away" style="display:block;margin:0 0 4px;">Away team</label>
+                <input id="pred-away" class="input" type="text" placeholder="e.g. Celtics" autocomplete="off" aria-autocomplete="list" />
+                <div id="sugg-pred-away" class="suggest" style="display:none"></div>
+              </div>
+              <button id="btnPred" class="btn">Start Prediction</button>
             </div>
           </div>
         </div>
         <div class="section">
-          <div class="title">2024-25 NBA Standings</div>
-          <div class="standings">
-            <div class="conf">
-              <div class="title">East</div>
-              <div class="team"><a href="/?q=Celtics">BOS</a><span>64â€“18</span></div>
-              <div class="team"><a href="/?q=Knicks">NYK</a><span>51â€“31</span></div>
-              <div class="team"><a href="/?q=Bucks">MIL</a><span>58â€“24</span></div>
-              <div class="team"><a href="/?q=76ers">PHI</a><span>48â€“34</span></div>
-              <div class="team"><a href="/?q=Cavaliers">CLE</a><span>55â€“27</span></div>
-            </div>
-            <div class="conf">
-              <div class="title">West</div>
-              <div class="team"><a href="/?q=Nuggets">DEN</a><span>57â€“25</span></div>
-              <div class="team"><a href="/?q=Thunder">OKC</a><span>58â€“24</span></div>
-              <div class="team"><a href="/?q=Timberwolves">MIN</a><span>56â€“26</span></div>
-              <div class="team"><a href="/?q=Mavericks">DAL</a><span>50â€“32</span></div>
-              <div class="team"><a href="/?q=Clippers">LAC</a><span>51â€“31</span></div>
-            </div>
+          <div class="title">NBA Standings</div>
+          <div class="standings" id="standings">
+            <div class="conf" id="std-east"><div class="title">East</div>
+            <div class="head"><div class="col-name">Team</div><div class="col-wl">W-L</div><div class="col-gb">GB</div><div class="col-streak">Streak</div></div></div>
+            <div class="conf" id="std-west"><div class="title">West</div>
+            <div class="head"><div class="col-name">Team</div><div class="col-wl">W-L</div><div class="col-gb">GB</div><div class="col-streak">Streak</div></div></div>
           </div>
           <div style="margin-top:12px; display:flex; gap:10px;">
-            <button class="btn" id="tryPredict">Start Prediction</button>
             <a class="btn secondary" href="/?q=2024-06-19">Explore a game date</a>
           </div>
-          </div>
+        </div>
       </div>
 
       <div class="results" id="results"></div>
@@ -115,11 +129,11 @@
 
       function openEntity(it) {
         if (!it || !it._entity || !it._id) return;
-        let path = "/";
-        if (it._entity === "player") path = `/player/${encodeURIComponent(it._id)}`;
-        else if (it._entity === "team") path = `/team/${encodeURIComponent(it._id)}`;
-        else if (it._entity === "game") path = `/game/${encodeURIComponent(it._id)}`;
-        else if (it._entity === "matchup") {
+        let path = '/';
+        if (it._entity === 'player') path = `/player/${encodeURIComponent(it._id)}`;
+        else if (it._entity === 'team') path = `/team/${encodeURIComponent(it._id)}`;
+        else if (it._entity === 'game') path = `/game/${encodeURIComponent(it._id)}`;
+        else if (it._entity === 'matchup') {
           const parts = String(it._id).split('-');
           if (parts.length === 2) path = `/matchup/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`;
         }
@@ -169,7 +183,7 @@
           const res = await fetch(url, { headers: { 'accept': 'application/json' } });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
-          meta.textContent = `Query: ${data?.meta?.query || text} â€¢ Results: ${data?.total ?? data?.items?.length ?? 0}`;
+          meta.textContent = `Query: ${data?.meta?.query || text} | Results: ${data?.total ?? data?.items?.length ?? 0}`;
           renderItems(data.items || []);
         } catch (e) {
           console.error(e);
@@ -210,7 +224,7 @@
         sugg.style.display = 'block';
       }
 
-      // Instant suggest
+      // Instant suggest with small debounce + matchup preference
       let suggestTimer = null;
       q.addEventListener('input', () => {
         const text = (q.value || '').trim();
@@ -225,7 +239,7 @@
         const myReq = ++activeSuggestReq;
         const fetchAndRender = async () => {
           try {
-            const looksMatchup = /\s(?:vs\.?|@|v)\s/i.test(text);
+            const looksMatchup = /\\\\s(?:vs\\\\.?|@|v)\\\\s/i.test(text);
             const url = looksMatchup ? `/suggest-matchup?q=${encodeURIComponent(text)}&limit=15` : `/suggest?q=${encodeURIComponent(text)}&limit=15`;
             const res = await fetch(url, { headers: { 'accept': 'application/json' } });
             if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -236,18 +250,22 @@
               renderSuggest(lastGoodItems);
             } else {
               renderSuggest(items);
-              if (items.length) {
-                lastGoodItems = items;
-                lastGoodQuery = text;
-              }
+              if (items.length) { lastGoodItems = items; lastGoodQuery = text; }
             }
-          } catch (e) {}
+          } catch {}
         };
         fetchAndRender();
         if (suggestTimer) clearTimeout(suggestTimer);
         suggestTimer = setTimeout(fetchAndRender, 120);
       });
 
+      // keyboard navigation for suggestions
+      function openPredictInline() {
+        const h = (document.getElementById('pred-home').value || '').trim();
+        const a = (document.getElementById('pred-away').value || '').trim();
+        if (!h || !a) return; // require both
+        location.href = `/predict-ui?home=${encodeURIComponent(h)}&away=${encodeURIComponent(a)}`;
+      }
       // keyboard navigation for suggestions
       q.addEventListener('keydown', (ev) => {
         if (sugg.style.display === 'none') return;
@@ -276,61 +294,38 @@
         doSearch(text);
       });
 
-      // Navigate directly to a player page by resolving name -> id via /suggest
+      // Direct navigation helpers
       async function navigatePlayerByName(name) {
-        const text = (name || '').trim();
-        if (!text) return;
+        const text = (name || '').trim(); if (!text) return;
         try {
           const r = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=player&limit=3`, { headers: { 'accept': 'application/json' } });
-          if (r.ok) {
-            const d = await r.json();
-            const it = (d.items || []).find(x => (x && x._entity === 'player' && x._id));
-            if (it) { window.location.href = `/player/${encodeURIComponent(it._id)}`; return; }
-          }
+          if (r.ok) { const d = await r.json(); const it = (d.items || []).find(x => (x && x._entity === 'player' && x._id)); if (it) { window.location.href = `/player/${encodeURIComponent(it._id)}`; return; } }
         } catch {}
-        // fallback: run a normal search if no exact player resolved
+        q.value = text; doSearch(text);
+      }
+      async function navigateTeamByName(name) {
+        const text = (name || '').trim(); if (!text) return;
+        try {
+          const r = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=team&limit=3`, { headers: { 'accept': 'application/json' } });
+          if (r.ok) { const d = await r.json(); const it = (d.items || []).find(x => (x && x._entity === 'team' && x._id)); if (it) { window.location.href = `/team/${encodeURIComponent(it._id)}`; return; } }
+        } catch {}
         q.value = text; doSearch(text);
       }
 
-            async function navigateTeamByName(name) {
-        const text = (name || '').trim();
-        if (!text) return;
-        try {
-          const r = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=team&limit=3`, { headers: { 'accept': 'application/json' } });
-          if (r.ok) {
-            const d = await r.json();
-            const it = (d.items || []).find(x => (x && x._entity === 'team' && x._id));
-            if (it) { window.location.href = `/team/${encodeURIComponent(it._id)}`; return; }
-          }
-        } catch {}
-        q.value = text; doSearch(text);
-      }// chips wiring
-      document.getElementById('chips-players').addEventListener('click', (e) => {
-        const chip = e.target.closest('.chip');
-        if (!chip) return;
-        navigatePlayerByName(chip.textContent.trim());
-      });
-            // trending list (players) -> direct player page\n      // Head-to-Head builder functions
+      // H2H suggest helpers
       async function fetchTeamSuggest(text) {
         const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=team&limit=10`, { headers: { 'accept': 'application/json' } });
         if (!res.ok) return [];
         const data = await res.json();
         const raw = (data.items || []).filter(it => (it._entity||'') === 'team');
-const seen = new Set();
-return raw.filter(it => {
-  if (!it || !it._id) return false;
-  const k = `${it._entity}:${it._id}`;
-  if (seen.has(k)) return false;
-  seen.add(k);
-  return true;
-});
+        const seen = new Set();
+        return raw.filter(it => { const k = `${it._entity}:${it._id}`; if (seen.has(k)) return false; seen.add(k); return true; });
       }
       function renderTeamSuggest(container, input, items) {
         if (!items || items.length === 0) { container.style.display='none'; container.innerHTML=''; return; }
         container.innerHTML = '';
         items.slice(0, 10).forEach((it, idx) => {
-          const div = document.createElement('div');
-          div.className = 's-item' + (idx === 0 ? ' active' : '');
+          const div = document.createElement('div'); div.className = 's-item' + (idx === 0 ? ' active' : '');
           const badge = document.createElement('div'); badge.className='s-entity'; badge.textContent='team';
           const box = document.createElement('div');
           const t = document.createElement('div'); t.className='s-title'; t.textContent = it._title || '';
@@ -365,49 +360,69 @@ return raw.filter(it => {
         if (/^\d+$/.test(t)) return t;
         try { const items = await fetchTeamSuggest(t); return items && items[0] && items[0]._id ? items[0]._id : null; } catch { return null; }
       }
-      async function openH2H() {
+  async function openH2H() {
         const h = document.getElementById('h2h-home').value.trim();
         const a = document.getElementById('h2h-away').value.trim();
         if (!h || !a) return;
         const [hid, aid] = await Promise.all([resolveTeamId(h), resolveTeamId(a)]);
         if (hid && aid) { location.href = `/matchup/${encodeURIComponent(hid)}/${encodeURIComponent(aid)}`; }
         else { q.value = `${h} vs ${a}`; doSearch(q.value); }
-      }
-            // quick-links: open team pages directly
-      document.querySelectorAll('#quick-links a[data-team]').forEach(a => {
-        a.addEventListener('click', (ev) => {
-          ev.preventDefault();
-          navigateTeamByName(a.getAttribute('data-team') || a.textContent || '');
-        });
-      });// wire h2h suggest + actions
-      const hHome = document.getElementById('h2h-home');
-      const hAway = document.getElementById('h2h-away');
-      wireTeamSuggest(hHome, document.getElementById('sugg-h2h-home'));
-      wireTeamSuggest(hAway, document.getElementById('sugg-h2h-away'));
-      document.getElementById('btnH2H').addEventListener('click', openH2H);
-      hHome.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openH2H(); }});
-      hAway.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openH2H(); }});document.getElementById('tryPredict').addEventListener('click', () => { location.href = '/predict-ui'; });
+  }
 
-      // query param boot
+      // Load and render conference standings (full list)
+      async function loadStandings() {
+        try {
+          const r = await fetch('/standings', { headers: { 'accept': 'application/json' } });
+          if (!r.ok) return;
+          const d = await r.json();
+          const fill = (id, items) => {
+            const box = document.getElementById(id);
+            if (!box) return;
+            Array.from(box.querySelectorAll('.team')).forEach(n => n.remove());
+            (items || []).forEach(it => {
+              const row = document.createElement('div'); row.className = 'team';
+              const name = document.createElement('div'); name.className = 'col-name';
+              const a = document.createElement('a'); a.href = '/?q=' + encodeURIComponent(it.name || it.city || it.id); a.textContent = it.name || it.city || it.id; a.addEventListener('click', (ev) => { ev.preventDefault(); navigateTeamByName(it.name || it.city || String(it.id)); });
+              name.appendChild(a);
+              const wl = document.createElement('div'); wl.className = 'col-wl'; wl.textContent = `${it.w ?? '-'}-${it.l ?? '-'}`;
+              const gb = document.createElement('div'); gb.className = 'col-gb'; gb.textContent = (typeof it.gb === 'number') ? (Math.round(it.gb * 10) / 10).toFixed(1) : '-';
+              const st = document.createElement('div'); st.className = 'col-streak'; st.textContent = it.streak || '-';
+              row.appendChild(name); row.appendChild(wl); row.appendChild(gb); row.appendChild(st); box.appendChild(row);
+            });
+          };
+          fill('std-east', d.east);
+          fill('std-west', d.west);
+        } catch {}
+      }
+
+      // chips wiring
+      document.getElementById('chips-players').addEventListener('click', (e) => {
+        const chip = e.target.closest('.chip'); if (!chip) return; navigatePlayerByName(chip.textContent.trim());
+      });
+      // quick-links teams
+      document.querySelectorAll('#quick-links a[data-team]').forEach(a => {
+        a.addEventListener('click', (ev) => { ev.preventDefault(); navigateTeamByName(a.getAttribute('data-team') || a.textContent || ''); });
+      });
+      // wire h2h suggest + actions
+      wireTeamSuggest(document.getElementById('h2h-home'), document.getElementById('sugg-h2h-home'));
+      wireTeamSuggest(document.getElementById('h2h-away'), document.getElementById('sugg-h2h-away'));
+      document.getElementById('btnH2H').addEventListener('click', openH2H);
+      wireTeamSuggest(document.getElementById('pred-home'), document.getElementById('sugg-pred-home'));
+      wireTeamSuggest(document.getElementById('pred-away'), document.getElementById('sugg-pred-away'));
+      document.getElementById('btnPred').addEventListener('click', openPredictInline);
+      document.getElementById('pred-home').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openPredictInline(); }});
+      document.getElementById('pred-away').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openPredictInline(); }});
+      document.getElementById('h2h-home').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openH2H(); }});
+      document.getElementById('h2h-away').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openH2H(); }});
+
+      // boot
       const u = new URL(location.href);
       const qp = (u.searchParams.get('q') || '').trim();
-      if (qp) {
-        q.value = qp;
-        doSearch(qp);
-      } else {
-        home.style.display = 'grid';
-        q.focus();
-      }
+      if (qp) { q.value = qp; doSearch(qp); }
+      else { home.style.display = 'grid'; q.focus(); loadStandings(); }
     </script>
   </body>
 </html>
-
-
-
-
-
-
-
 
 
 

@@ -1,22 +1,54 @@
-﻿from __future__ import annotations
-
-
+﻿# scripts/search_service.py
+from __future__ import annotations
 
 # --- In-memory suggest globals & helpers ---
 import re
 import difflib
+import os
+import math
+import time
+from typing import Dict, List, Optional
 
-_MEM_PLAYERS = []  # list of dicts
-_MEM_TEAMS = []    # list of dicts
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.ml import Pipeline, PipelineModel
+from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.feature import StandardScaler, VectorAssembler
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+
+from src.search.engine import run_query
+import src.search.engine as search_engine
+from src.analytics.outcome import (
+    FEATURE_DIFFS,
+    build_pregame_features,
+    build_match_features,
+    load_pipeline_model,
+    train_pregame_outcome_model,
+)
+from src.analytics.game_prediction import (
+    build_game_feature_frame,
+    train_outcome_model as train_simple_outcome,
+)
+
+import json  # (se usi risposte debug)
+
+_MEM_PLAYERS: List[dict] = []  # list of dicts
+_MEM_TEAMS: List[dict] = []    # list of dicts
 
 def _norm(s: str) -> str:
     import re as _re
     s = (s or "").lower().strip()
     s = _re.sub(r"[^a-z0-9 ]+", " ", s)
-    s = _re.sub(r"\\s+", " ", s)
+    s = _re.sub(r"\s+", " ", s)
     return s
 
-def _build_mem_indexes(spark):
+def _build_mem_indexes(spark: SparkSession):
     global _MEM_PLAYERS, _MEM_TEAMS
     try:
         pdf = (
@@ -80,7 +112,7 @@ def _looks_game_query(q: str) -> bool:
     digits = ''.join(c for c in ql if c.isdigit())
     return len(digits) >= 6
 
-def _mem_rank(items, q, limit):
+def _mem_rank(items: List[dict], q: str, limit: int) -> List[dict]:
     if not items:
         return []
     qn = _norm(q)
@@ -118,7 +150,7 @@ def _mem_rank(items, q, limit):
         out.append(o)
     return out
 
-def _quick_suggest(q, limit, entity):
+def _quick_suggest(q: str, limit: int, entity: Optional[str]) -> List[dict]:
     ent = (entity or "").lower().strip()
     # Let Spark handle game-like queries or explicit game entity
     if ent == "game" or _looks_game_query(q):
@@ -150,44 +182,12 @@ def _quick_suggest(q, limit, entity):
 
 
 """
-FastAPI search service that keeps a single longâ€‘lived PySpark session.
+FastAPI search service that keeps a single long-lived PySpark session.
 
 Notes
 - Spark is created on FastAPI startup and stopped on shutdown.
 - GLOBAL_* tables are loaded from the local Parquet warehouse and cached.
 """
-
-import os
-from typing import Dict, List, Optional
-import re
-
-from fastapi import FastAPI, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-import json
-
-from src.search.engine import run_query
-import src.search.engine as search_engine
-import math
-from src.analytics.outcome import (
-    FEATURE_DIFFS,
-    build_pregame_features,
-    build_match_features,
-    load_pipeline_model,
-    train_pregame_outcome_model,
-)
-from src.analytics.game_prediction import build_game_feature_frame, train_outcome_model as train_simple_outcome
-from pyspark.ml import Pipeline, PipelineModel
-from pyspark.ml.classification import LogisticRegression
-from pyspark.ml.feature import StandardScaler, VectorAssembler
-from pyspark.ml.evaluation import BinaryClassificationEvaluator
-import time
-
 
 WAREHOUSE_DIR = os.environ.get("WAREHOUSE_DIR", "warehouse")
 POPULARITY_DIR = os.environ.get("POPULARITY_DIR", os.path.join("metadata", "popularity"))
@@ -200,7 +200,6 @@ GLOBAL_PARQUET = {
     "GLOBAL_LINE_SCORE": "global_line_score",
     "GLOBAL_OTHER_STATS": "global_other_stats",
 }
-
 
 def _mk_spark() -> SparkSession:
     builder = (
@@ -221,7 +220,6 @@ def _mk_spark() -> SparkSession:
     # Reduce noisy WARNs like FileStreamSink/metadata when probing non-existent paths
     spark.sparkContext.setLogLevel("ERROR")
     return spark
-
 
 def _register_views_from_warehouse(spark: SparkSession, base: str = WAREHOUSE_DIR):
     # Load Parquet folders and register temp views
@@ -267,7 +265,142 @@ def _register_views_from_warehouse(spark: SparkSession, base: str = WAREHOUSE_DI
     except Exception as e:
         print(f"[WARN] Could not prepare GAME_RESULT from GLOBAL_LINE_SCORE: {e}")
     print("[OK] GLOBAL_* views registered and cached (where available)")
+    # Try to load persisted TEAM_CONFERENCE if present
+    try:
+        tc_path = os.path.join(base, "team_conference")
+        if os.path.isdir(tc_path):
+            df = spark.read.parquet(tc_path)
+            df.createOrReplaceTempView("TEAM_CONFERENCE")
+            spark.catalog.cacheTable("TEAM_CONFERENCE")
+            print(f"[INIT] -> TEAM_CONFERENCE from {tc_path}")
+    except Exception as e:
+        print(f"[WARN] Could not load persisted TEAM_CONFERENCE: {e}")
 
+
+def _materialize_team_conference(spark: SparkSession, *, persist: bool | None = None, path: Optional[str] = None) -> None:
+    """
+    Crea/aggiorna una temp view TEAM_CONFERENCE con (team_id, team_name, city, conference)
+    normalizzando conference e, se mancante, deducendo da division (anche con abbreviazioni).
+    """
+    F_ = F
+    t = (
+        spark.table("GLOBAL_TEAM")
+        .select(
+            F_.col("team_id").cast("int").alias("team_id"),
+            F_.col("team_name").alias("team_name"),
+            F_.col("city").alias("city"),
+            F_.col("conference").alias("conference_raw"),
+            F_.col("division").alias("division_raw"),
+        )
+    )
+
+    # normalizza: togli parole "conference"/"division", tiene solo lettere, lowercase
+    def _norm_letters(col):
+        return F_.lower(
+            F_.trim(
+                F_.regexp_replace(
+                    F_.regexp_replace(F_.coalesce(col, F_.lit("")), r"(?i)conference", ""),
+                    r"(?i)division",
+                    "",
+                )
+            )
+        )
+
+    conf_norm = _norm_letters(F_.col("conference_raw"))
+    div_norm = _norm_letters(F_.col("division_raw"))
+    # primo token della division (es. "atlantic division" -> "atlantic")
+    first_div = F_.regexp_extract(div_norm, r"^([a-z]+)", 1)
+
+    # Robust mapping from normalized conference/division tokens
+    east_conf = ["e", "east", "eastern", "est"]
+    west_conf = ["w", "west", "western", "ovest"]
+
+    # Fallback mapping by team_name when needed
+    east_names = [
+        "celtics","nets","knicks","76ers","bucks","cavaliers","bulls","pistons","pacers",
+        "hawks","hornets","heat","magic","raptors","wizards"
+    ]
+    west_names = [
+        "nuggets","grizzlies","warriors","clippers","suns","lakers","timberwolves","thunder",
+        "mavericks","pelicans","kings","trail blazers","jazz","rockets","spurs"
+    ]
+
+    tc = (
+        t.withColumn("_conf_norm", conf_norm)
+        .withColumn("_div_norm", F_.when(first_div == "", None).otherwise(first_div))
+        .withColumn("_name_norm", F_.lower(F_.trim(F_.col("team_name"))))
+        .withColumn(
+            "_from_conf",
+            F_.when(
+                (
+                    F_.col("_conf_norm").startswith(F_.lit("e"))
+                    | F_.col("_conf_norm").isin(*east_conf)
+                ),
+                F_.lit("East"),
+            )
+            .when(
+                (
+                    F_.col("_conf_norm").startswith(F_.lit("w"))
+                    | F_.col("_conf_norm").isin(*west_conf)
+                ),
+                F_.lit("West"),
+            )
+            .otherwise(F_.lit(None)),
+        )
+        .withColumn(
+            "_from_div",
+            F_.when(
+                (
+                    F_.col("_div_norm").startswith(F_.lit("atl"))
+                    | F_.col("_div_norm").startswith(F_.lit("cen"))
+                    | F_.col("_div_norm").startswith(F_.lit("southe"))
+                    | F_.col("_div_norm").startswith(F_.lit("se"))
+                ),
+                F_.lit("East"),
+            )
+            .when(
+                (
+                    F_.col("_div_norm").startswith(F_.lit("northw"))
+                    | F_.col("_div_norm").startswith(F_.lit("nw"))
+                    | F_.col("_div_norm").startswith(F_.lit("pac"))
+                    | F_.col("_div_norm").startswith(F_.lit("southw"))
+                    | F_.col("_div_norm").startswith(F_.lit("sw"))
+                ),
+                F_.lit("West"),
+            )
+            .otherwise(F_.lit(None)),
+        )
+        .withColumn(
+            "_from_name",
+            F_.when(F_.col("_name_norm").isin(*east_names), F_.lit("East"))
+             .when(F_.col("_name_norm").isin(*west_names), F_.lit("West"))
+             .otherwise(F_.lit(None))
+        )
+        .withColumn("conference", F_.coalesce(F_.col("_from_conf"), F_.col("_from_div"), F_.col("_from_name")))
+        .select("team_id", "team_name", "city", "conference")
+    )
+
+    tc.createOrReplaceTempView("TEAM_CONFERENCE")
+    spark.catalog.cacheTable("TEAM_CONFERENCE")
+
+    # optional persist to warehouse for faster subsequent startups
+    do_persist = persist if persist is not None else (os.environ.get("PERSIST_TEAM_CONFERENCE", "0") in ["1","true","yes"])
+    if do_persist:
+        out_dir = path or os.path.join(WAREHOUSE_DIR, "team_conference")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            (
+                tc.coalesce(1)
+                .write.mode("overwrite")
+                .parquet(out_dir)
+            )
+            print(f"[OK] TEAM_CONFERENCE persisted to {os.path.abspath(out_dir)}")
+        except Exception as e:
+            print(f"[WARN] Persist TEAM_CONFERENCE failed: {e}")
+    print("[OK] TEAM_CONFERENCE view ready.")
 
 def _ensure_prediction_views(spark: SparkSession) -> None:
     """Create TEAM_DAILY_DIFF and TEAM_CUMAVG used by prediction/training.
@@ -335,7 +468,6 @@ def _ensure_prediction_views(spark: SparkSession) -> None:
         FROM TEAM_DAILY_DIFF
         """
     )
-
 
 def _load_popularity_maps(spark: SparkSession) -> tuple[dict[str, float], dict[str, float]]:
     """Load popularity Parquet (players, teams) if available and return normalized maps.
@@ -474,9 +606,7 @@ def build_labels_and_train_model(spark: SparkSession) -> Optional[PipelineModel]
         print(f"[WARN] build_labels_and_train_model failed: {e}")
         return None
 
-
 app = FastAPI(title="LSDM Search Service", version="1.0.0")
-
 
 # Global Spark handle (initialized on startup)
 spark: Optional[SparkSession] = None
@@ -488,12 +618,18 @@ FORM_YEARS = int(os.environ.get("FORM_YEARS", "1"))
 ACTIVE_FORM_WINDOW = FORM_WINDOW
 ACTIVE_FORM_YEARS = FORM_YEARS
 
-
 @app.on_event("startup")
 def _on_startup():
     global spark, outcome_model, ACTIVE_FORM_WINDOW, ACTIVE_FORM_YEARS
     spark = _mk_spark()
     _register_views_from_warehouse(spark)
+    # Build normalized TEAM_CONFERENCE view for consistent joins
+    try:
+        persist = os.environ.get("PERSIST_TEAM_CONFERENCE", "0") in ["1","true","yes"]
+        out_dir = os.path.join(WAREHOUSE_DIR, "team_conference")
+        _materialize_team_conference(spark, persist=persist, path=out_dir)
+    except Exception as e:
+        print(f"[WARN] TEAM_CONFERENCE build failed: {e}")
     # Optional warmup to trigger JVM init and cache population
     try:
         spark.sql("SELECT * FROM GLOBAL_PLAYER LIMIT 1").collect()
@@ -531,7 +667,6 @@ def _on_startup():
         print(f"[WARN] Outcome model load/train failed: {e}")
     # (legacy training block removed: serving is load-only)
 
-
 @app.on_event("shutdown")
 def _on_shutdown():
     global spark, outcome_model
@@ -542,12 +677,10 @@ def _on_shutdown():
         spark = None
         outcome_model = None
 
-
 class SearchResponse(BaseModel):
     total: int
     items: List[Dict]
     meta: Dict
-
 
 @app.get("/health")
 def health():
@@ -555,7 +688,6 @@ def health():
         return {"status": "starting"}
     cnt = spark.sql("SELECT COUNT(*) AS c FROM GLOBAL_PLAYER").collect()[0]["c"]
     return {"status": "ok", "players": cnt}
-
 
 @app.get("/warmup")
 def warmup():
@@ -565,7 +697,6 @@ def warmup():
     spark.sql("SELECT * FROM GLOBAL_TEAM   LIMIT 1").collect()
     spark.sql("SELECT * FROM GLOBAL_GAME   LIMIT 1").collect()
     return {"status": "warmed"}
-
 
 @app.get("/search", response_model=SearchResponse)
 def search(
@@ -583,7 +714,6 @@ def search(
                 it = {**it, "_title": it.get("title")}
         norm_items.append(it)
     return {"total": len(norm_items), "items": norm_items, "meta": meta}
-
 
 @app.get("/suggest")
 def suggest(
@@ -768,146 +898,7 @@ def suggest(
     _SUGGEST_CACHE[key] = (now, clipped)
     return {"items": clipped}
 
-# --- Entity detail endpoints ---
-@app.get("/entity/player/{pid}")
-def entity_player(pid: str):
-    if spark is None:
-        return {"error": "service starting"}
-    try:
-        df = spark.table("GLOBAL_PLAYER")
-        row = (df
-               .where(F.col("player_id").cast("string") == F.lit(pid))
-               .select(
-                   F.col("player_id").cast("string").alias("id"),
-                   F.col("full_name").alias("name"),
-                   F.col("first_name"), F.col("last_name"),
-                   F.col("position"), F.col("height"), F.col("weight"),
-                   F.col("birth_date"), F.col("nationality"), F.col("college"),
-                   F.col("experience"), F.col("team_id").cast("string").alias("team_id")
-               )
-               .limit(1).collect())
-        if not row:
-            return {"error": "not found", "id": pid}
-        rec = row[0].asDict(recursive=True)
-        # resolve team label
-        try:
-            t = spark.table("GLOBAL_TEAM").where(F.col("team_id").cast("string") == F.lit(rec.get("team_id")))
-            trow = t.select(F.col("team_name").alias("team_name"), F.col("city").alias("team_city")).limit(1).collect()
-            if trow:
-                rec["team"] = {"id": rec.get("team_id"), "name": trow[0]["team_name"], "city": trow[0]["team_city"]}
-        except Exception:
-            pass
-        return {"_entity": "player", **rec}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/entity/team/{tid}")
-def entity_team(tid: str):
-    if spark is None:
-        return {"error": "service starting"}
-    try:
-        df = spark.table("GLOBAL_TEAM")
-        row = (df.where(F.col("team_id").cast("string") == F.lit(tid))
-                 .select(F.col("team_id").cast("string").alias("id"), F.col("team_name").alias("name"), F.col("city"), F.col("conference"), F.col("division"), F.col("state"), F.col("arena"))
-                 .limit(1).collect())
-        if not row:
-            return {"error": "not found", "id": tid}
-        rec = row[0].asDict(recursive=True)
-        return {"_entity": "team", **rec}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/entity/game/{gid}")
-def entity_game(gid: str, page: int = Query(0, ge=0), size: int = Query(5, ge=1, le=50)):
-    if spark is None:
-        return {"error": "service starting"}
-    try:
-        g = spark.table("GLOBAL_GAME").where(F.col("game_id").cast("string") == F.lit(gid)).alias("g")
-        t = spark.table("GLOBAL_TEAM").select(F.col("team_id").alias("tid"), F.col("team_name").alias("tname"))
-        df = (g
-              .join(t.alias("h"), F.col("g.home_team_id") == F.col("h.tid"), "left")
-              .join(t.alias("a"), F.col("g.away_team_id") == F.col("a.tid"), "left"))
-        row = (df.select(
-                F.col("g.game_id").cast("string").alias("id"),
-                F.col("g.game_date").cast("date").alias("date"),
-                F.col("g.home_team_id").cast("string").alias("home_id"),
-                F.col("g.away_team_id").cast("string").alias("away_id"),
-                F.col("h.tname").alias("home"), F.col("a.tname").alias("away"),
-                F.col("g.final_score_home").alias("home_pts"), F.col("g.final_score_away").alias("away_pts"),
-                F.col("g.location").alias("location"), F.col("g.attendance").alias("attendance"), F.col("g.period_count").alias("period_count")
-             ).limit(1).collect())
-        if not row:
-            return {"error": "not found", "id": gid}
-        rec = row[0].asDict(recursive=True)
-
-        # Optional per-period line score
-        try:
-            if "GLOBAL_LINE_SCORE" in [tt.name for tt in spark.catalog.listTables()]:
-                ls = spark.table("GLOBAL_LINE_SCORE").alias("ls")
-                home_id = rec.get("home_id")
-                away_id = rec.get("away_id")
-                per = (ls.where(F.col("game_id").cast("string") == F.lit(gid))
-                        .groupBy("period")
-                        .agg(
-                            F.sum(F.when(F.col("team_id").cast("string") == F.lit(home_id), F.col("points")).otherwise(F.lit(0))).alias("home_pts"),
-                            F.sum(F.when(F.col("team_id").cast("string") == F.lit(away_id), F.col("points")).otherwise(F.lit(0))).alias("away_pts"),
-                        )
-                        .orderBy(F.col("period").asc()))
-                rec["line"] = [r.asDict(recursive=True) for r in per.collect()]
-        except Exception:
-            pass
-
-        # Head-to-head history (previous games only), paginated
-        try:
-            home_id = int(rec["home_id"]) if rec.get("home_id") is not None else None
-            away_id = int(rec["away_id"]) if rec.get("away_id") is not None else None
-            game_date = rec.get("date")
-            if home_id and away_id and game_date:
-                base = spark.table("GLOBAL_GAME").select(
-                    F.col("game_id").cast("string").alias("gid"),
-                    F.col("game_date").cast("date").alias("date"),
-                    F.col("home_team_id").cast("int").alias("home_team_id"),
-                    F.col("away_team_id").cast("int").alias("away_team_id"),
-                    F.col("final_score_home").alias("home_pts"),
-                    F.col("final_score_away").alias("away_pts"),
-                )
-                filt = (
-                    ((F.col("home_team_id") == F.lit(home_id)) & (F.col("away_team_id") == F.lit(away_id))) |
-                    ((F.col("home_team_id") == F.lit(away_id)) & (F.col("away_team_id") == F.lit(home_id)))
-                ) & (F.col("date") < F.lit(game_date))
-                h2h = base.where(filt)
-                tm = spark.table("GLOBAL_TEAM").select(F.col("team_id").alias("tid"), F.col("team_name").alias("tname"))
-                h2h = (h2h
-                       .join(tm.alias("h"), F.col("home_team_id") == F.col("h.tid"), "left")
-                       .join(tm.alias("a"), F.col("away_team_id") == F.col("a.tid"), "left"))
-                from pyspark.sql.window import Window
-                w = Window.orderBy(F.col("date").desc())
-                h2h = h2h.withColumn("rn", F.row_number().over(w))
-                start = page * size + 1
-                end = (page + 1) * size
-                page_df = (h2h.where((F.col("rn") >= F.lit(start)) & (F.col("rn") <= F.lit(end)))
-                               .select(
-                                   F.col("gid").alias("id"),
-                                   F.col("date").cast("string").alias("date"),
-                                   F.col("h.tname").alias("home"),
-                                   F.col("a.tname").alias("away"),
-                                   F.col("home_pts"), F.col("away_pts")
-                               ))
-                total = h2h.count()
-                rec["history"] = [r.asDict(recursive=True) for r in page_df.collect()]
-                rec["history_total"] = int(total)
-                rec["history_page"] = int(page)
-                rec["history_size"] = int(size)
-        except Exception:
-            pass
-
-        return {"_entity": "game", **{k: (v if k != "date" else str(v)) for k, v in rec.items()}}
-    except Exception as e:
-        return {"error": str(e)}
-
-# --------------------------
-# Fuzzy fallback (typo-tolerant)
-# --------------------------
+# --- Fuzzy fallback (typo-tolerant) ---
 def _fuzzy_teams_suggest(spark: SparkSession, q: str, limit: int) -> list[dict]:
     ql = q.lower().strip()
     if not ql:
@@ -935,7 +926,6 @@ def _fuzzy_teams_suggest(spark: SparkSession, q: str, limit: int) -> list[dict]:
         F.lit(None).cast('string').alias('_extra')
     ))
     return [r.asDict(recursive=True) for r in out.collect()]
-
 
 def _fuzzy_players_suggest(spark: SparkSession, q: str, limit: int) -> list[dict]:
     ql = q.lower().strip()
@@ -986,7 +976,6 @@ def _resolve_team_id(token: str) -> Optional[int]:
          .collect()
     )
     return int(cand[0][0]) if cand else None
-
 
 @app.get("/predict")
 def predict(
@@ -1052,7 +1041,6 @@ def predict(
         "train_years": int(os.environ.get("TRAIN_YEARS", "1")),
     }
 
-
 # --- CORS (useful for local dev/frontends) ---
 app.add_middleware(
     CORSMiddleware,
@@ -1062,12 +1050,10 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-
 # --- Static HTML UI ---
 static_dir = os.path.join(os.getcwd(), "web")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir, html=False), name="static")
-
 
 @app.get("/")
 def index_page():
@@ -1075,37 +1061,42 @@ def index_page():
     index_path = os.path.join(static_dir, "index.html")
     return FileResponse(index_path) if os.path.isfile(index_path) else {"message": "UI not found. Create web/index.html."}
 
-
 @app.get("/predict-ui")
 def predict_page():
     """Serve a minimal prediction UI."""
     index_path = os.path.join(static_dir, "predict.html")
     return FileResponse(index_path) if os.path.isfile(index_path) else {"message": "UI not found. Create web/predict.html."}
 
+@app.post("/admin/materialize/team-conference")
+def admin_materialize_team_conference(persist: bool = True):
+    if spark is None:
+        return {"status": "starting"}
+    try:
+        out_dir = os.path.join(WAREHOUSE_DIR, "team_conference")
+        _materialize_team_conference(spark, persist=persist, path=out_dir)
+        return {"status": "ok", "path": out_dir}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 @app.get("/player/{pid}")
 def player_page(pid: str):
     path = os.path.join(static_dir, "player.html")
     return FileResponse(path) if os.path.isfile(path) else {"message": "UI not found. Create web/player.html."}
 
-
 @app.get("/team/{tid}")
 def team_page(tid: str):
     path = os.path.join(static_dir, "team.html")
     return FileResponse(path) if os.path.isfile(path) else {"message": "UI not found. Create web/team.html."}
-
 
 @app.get("/game/{gid}")
 def game_page(gid: str):
     path = os.path.join(static_dir, "game.html")
     return FileResponse(path) if os.path.isfile(path) else {"message": "UI not found. Create web/game.html."}
 
-
 @app.get("/matchup/{home}/{away}")
 def matchup_page(home: str, away: str):
     path = os.path.join(static_dir, "matchup.html")
     return FileResponse(path) if os.path.isfile(path) else {"message": "UI not found. Create web/matchup.html."}
-
 
 @app.get("/suggest-matchup")
 def suggest_matchup(q: str = Query(...), limit: int = Query(10, ge=1, le=30)):
@@ -1160,100 +1151,520 @@ def suggest_matchup(q: str = Query(...), limit: int = Query(10, ge=1, le=30)):
             break
     return {"items": pairs}
 
-
-@app.get("/entity/head2head")
-def entity_head2head(
-    home: str = Query(..., description="Home team id"),
-    away: str = Query(..., description="Away team id"),
-    page: int = Query(0, ge=0),
-    size: int = Query(5, ge=1, le=50),
-):
+@app.get("/entity/player/{pid}")
+def entity_player(pid: str):
     if spark is None:
-        return {"items": []}
+        return {"error": "service starting"}
     try:
-        h = int(home); a = int(away)
-    except Exception:
-        return {"error": "invalid team ids"}
-    try:
-        g = spark.table("GLOBAL_GAME").select(
-            F.col("game_id").cast("string").alias("id"),
-            F.col("game_date").cast("date").alias("date"),
-            F.col("home_team_id").cast("int").alias("home_id"),
-            F.col("away_team_id").cast("int").alias("away_id"),
-            F.col("final_score_home").alias("home_pts"),
-            F.col("final_score_away").alias("away_pts"),
-        )
-        filt = (((F.col("home_id") == F.lit(h)) & (F.col("away_id") == F.lit(a))) |
-                ((F.col("home_id") == F.lit(a)) & (F.col("away_id") == F.lit(h))))
-        base = g.where(filt)
-        tm = spark.table("GLOBAL_TEAM").select(F.col("team_id").alias("tid"), F.col("team_name").alias("tname"))
-        base = (base
-            .join(tm.alias("th"), F.col("home_id") == F.col("th.tid"), "left")
-            .join(tm.alias("ta"), F.col("away_id") == F.col("ta.tid"), "left"))
-        from pyspark.sql.window import Window
-        w = Window.orderBy(F.col("date").desc())
-        base = base.withColumn("rn", F.row_number().over(w))
-        start = page*size + 1; end = (page+1)*size
-        page_df = (base.where((F.col("rn")>=F.lit(start)) & (F.col("rn")<=F.lit(end)))
-                        .select(
-                            F.col("id"),
-                            F.col("date").cast("string").alias("date"),
-                            F.col("th.tname").alias("home"),
-                            F.col("ta.tname").alias("away"),
-                            F.col("home_pts"), F.col("away_pts")
-                        ))
-        total = base.count()
-        return {"items": [r.asDict(recursive=True) for r in page_df.collect()], "total": int(total), "page": int(page), "size": int(size)}
+        df = spark.table("GLOBAL_PLAYER")
+        row = (df
+               .where(F.col("player_id").cast("string") == F.lit(pid))
+               .select(
+                   F.col("player_id").cast("string").alias("id"),
+                   F.col("full_name").alias("name"),
+                   F.col("first_name"), F.col("last_name"),
+                   F.col("position"), F.col("height"), F.col("weight"),
+                   F.col("birth_date"), F.col("nationality"), F.col("college"),
+                   F.col("experience"), F.col("team_id").cast("string").alias("team_id")
+               )
+               .limit(1).collect())
+        if not row:
+            return {"error": "not found", "id": pid}
+        rec = row[0].asDict(recursive=True)
+        # resolve team label
+        try:
+            t = spark.table("GLOBAL_TEAM").where(F.col("team_id").cast("string") == F.lit(rec.get("team_id")))
+            trow = t.select(F.col("team_name").alias("team_name"), F.col("city").alias("team_city")).limit(1).collect()
+            if trow:
+                rec["team"] = {"id": rec.get("team_id"), "name": trow[0]["team_name"], "city": trow[0]["team_city"]}
+        except Exception:
+            pass
+        return {"_entity": "player", **rec}
     except Exception as e:
         return {"error": str(e)}
 
-
-@app.get("/debug/outcome-status")
-def outcome_status():
+@app.get("/entity/team/{tid}")
+def entity_team(tid: str):
     if spark is None:
-        return {"status": "starting"}
-    result = {}
+        return {"error": "service starting"}
     try:
-        counts = {
-            "GLOBAL_GAME": int(spark.table("GLOBAL_GAME").count()),
-            "GLOBAL_OTHER_STATS": int(spark.table("GLOBAL_OTHER_STATS").count()),
-        }
-        if "GLOBAL_LINE_SCORE" in [t.name for t in spark.catalog.listTables()]:
-            counts["GLOBAL_LINE_SCORE"] = int(spark.table("GLOBAL_LINE_SCORE").count())
-        if "GAME_RESULT" in [t.name for t in spark.catalog.listTables()]:
-            counts["GAME_RESULT"] = int(spark.table("GAME_RESULT").count())
-        result["counts"] = counts
-        # Rolling features sample size (fast estimate)
-        try:
-            roll = build_pregame_features(spark, window_n=ACTIVE_FORM_WINDOW, years=ACTIVE_FORM_YEARS)
-            result["pregame_features"] = int(roll.limit(1000).count())  # light probe
-        except Exception as e:
-            result["pregame_features_error"] = str(e)
-        # Simple features sample size (light)
-        try:
-            g = spark.table("GLOBAL_GAME").select("game_id","game_date","home_team_id","away_team_id","final_score_home","final_score_away")
-            s = spark.table("GLOBAL_OTHER_STATS").select("game_id","team_id","rebounds","assists","steals","blocks","turnovers","fouls")
-            home = s.alias("home"); away = s.alias("away")
-            simple_probe = (g.alias("g")
-                .join(home, (F.col("g.game_id") == F.col("home.game_id")) & (F.col("g.home_team_id") == F.col("home.team_id")), "left")
-                .join(away, (F.col("g.game_id") == F.col("away.game_id")) & (F.col("g.away_team_id") == F.col("away.team_id")), "left")
-                .select((F.col("final_score_home") > F.col("final_score_away")).cast("double").alias("label"))
-                .where(F.col("label").isNotNull())
-                .limit(1000))
-            result["simple_features"] = int(simple_probe.count())
-        except Exception as e:
-            result["simple_features_error"] = str(e)
-        result["model"] = {
-            "loaded": outcome_model is not None,
-            "model_dir": MODEL_DIR,
-            "years": ACTIVE_FORM_YEARS,
-            "window": ACTIVE_FORM_WINDOW,
-        }
+        df = spark.table("GLOBAL_TEAM")
+        row = (df.where(F.col("team_id").cast("string") == F.lit(tid))
+                 .select(F.col("team_id").cast("string").alias("id"), F.col("team_name").alias("name"), F.col("city"), F.col("conference"), F.col("division"), F.col("state"), F.col("arena"))
+                 .limit(1).collect())
+        if not row:
+            return {"error": "not found", "id": tid}
+        rec = row[0].asDict(recursive=True)
+        return {"_entity": "team", **rec}
     except Exception as e:
-        result["error"] = str(e)
-    return result
+        return {"error": str(e)}
+
+@app.get("/entity/game/{gid}")
+def entity_game(gid: str, page: int = Query(0, ge=0), size: int = Query(5, ge=1, le=50)):
+    if spark is None:
+        return {"error": "service starting"}
+    try:
+        g = spark.table("GLOBAL_GAME").where(F.col("game_id").cast("string") == F.lit(gid))
+        g = g.alias("g")
+        teams = spark.table("TEAM_CONFERENCE").alias("t")
+        th = teams.alias("th")
+        ta = teams.alias("ta")
+        df = (
+            g
+            .join(th, g["home_team_id"].cast("int") == th["team_id"], "left")
+            .join(ta, g["away_team_id"].cast("int") == ta["team_id"], "left")
+        )
+        row = (
+            df.select(
+                g["game_id"].cast("string").alias("id"),
+                g["game_date"].cast("date").alias("date"),
+                g["home_team_id"].cast("string").alias("home_id"),
+                g["away_team_id"].cast("string").alias("away_id"),
+                th["team_name"].alias("home"),
+                ta["team_name"].alias("away"),
+                g["final_score_home"].alias("home_pts"),
+                g["final_score_away"].alias("away_pts"),
+                g["location"].alias("location"),
+                g["attendance"].alias("attendance"),
+                g["period_count"].alias("period_count"),
+            )
+            .limit(1)
+            .collect()
+        )
+        if not row:
+            return {"error": "not found", "id": gid}
+        rec = row[0].asDict(recursive=True)
+
+        # Optional per-period line score
+        try:
+            if "GLOBAL_LINE_SCORE" in [tt.name for tt in spark.catalog.listTables()]:
+                ls = spark.table("GLOBAL_LINE_SCORE").alias("ls")
+                home_id = rec.get("home_id")
+                away_id = rec.get("away_id")
+                per = (ls.where(F.col("game_id").cast("string") == F.lit(gid))
+                        .groupBy("period")
+                        .agg(
+                            F.sum(F.when(F.col("team_id").cast("string") == F.lit(home_id), F.col("points")).otherwise(F.lit(0))).alias("home_pts"),
+                            F.sum(F.when(F.col("team_id").cast("string") == F.lit(away_id), F.col("points")).otherwise(F.lit(0))).alias("away_pts"),
+                        )
+                        .orderBy(F.col("period").asc()))
+                rec["line"] = [r.asDict(recursive=True) for r in per.collect()]
+        except Exception:
+            pass
+
+        # Head-to-head history (previous games only), paginated
+        try:
+            home_id = int(rec["home_id"]) if rec.get("home_id") is not None else None
+            away_id = int(rec["away_id"]) if rec.get("away_id") is not None else None
+            game_date = rec.get("date")
+            if home_id and away_id and game_date:
+                base = spark.table("GLOBAL_GAME").select(
+                    F.col("game_id").cast("string").alias("gid"),
+                    F.col("game_date").cast("date").alias("date"),
+                    F.col("home_team_id").cast("int").alias("home_team_id"),
+                    F.col("away_team_id").cast("int").alias("away_team_id"),
+                    F.col("final_score_home").alias("home_pts"),
+                    F.col("final_score_away").alias("away_pts"),
+                )
+                filt = (
+                    ((F.col("home_team_id") == F.lit(home_id)) & (F.col("away_team_id") == F.lit(away_id)))
+                    | ((F.col("home_team_id") == F.lit(away_id)) & (F.col("away_team_id") == F.lit(home_id)))
+                ) & (F.col("date") < F.lit(game_date))
+                h2h = base.where(filt)
+                tc = spark.table("TEAM_CONFERENCE").alias("tc")
+                th = tc.alias("h")
+                ta = tc.alias("a")
+                h2h = (
+                    h2h.join(th, h2h["home_team_id"] == th["team_id"], "left")
+                    .join(ta, h2h["away_team_id"] == ta["team_id"], "left")
+                )
+                from pyspark.sql.window import Window
+                w = Window.orderBy(F.col("date").desc())
+                h2h = h2h.withColumn("rn", F.row_number().over(w))
+                start = page * size + 1
+                end = (page + 1) * size
+                page_df = (
+                    h2h.where((F.col("rn") >= F.lit(start)) & (F.col("rn") <= F.lit(end)))
+                    .select(
+                        F.col("gid").alias("id"),
+                        F.col("date").cast("string").alias("date"),
+                        th["team_name"].alias("home"),
+                        ta["team_name"].alias("away"),
+                        F.col("home_pts"),
+                        F.col("away_pts"),
+                    )
+                )
+                total = h2h.count()
+                rec["history"] = [r.asDict(recursive=True) for r in page_df.collect()]
+                rec["history_total"] = int(total)
+                rec["history_page"] = int(page)
+                rec["history_size"] = int(size)
+        except Exception:
+            pass
+
+        return {"_entity": "game", **{k: (v if k != "date" else str(v)) for k, v in rec.items()}}
+    except Exception as e:
+        return {"error": str(e)}
+
+# --------------------------
+# Helpers: derive conference reliably from available columns
+# --------------------------
+def _derive_team_conference(spark: SparkSession):
+    """
+    Ritorna un DataFrame (team_id:int, team_name, city, conference:string)
+    Conferenza risolta in quest'ordine:
+      1) GLOBAL_TEAM.conference se esiste e non null
+      2) mapping da divisione (Atlantic/Central/Southeast -> East; Northwest/Pacific/Southwest -> West)
+      3) TEAM_DETAILS / GLOBAL_TEAM_DETAILS (se presenti)
+      4) TEAM_INFO_COMMON (se presente)
+    """
+    gt = spark.table("GLOBAL_TEAM")
+    sel = [
+        F.col("team_id").cast("int").alias("team_id"),
+        F.col("team_name").alias("team_name"),
+        F.col("city").alias("city"),
+    ]
+    if "conference" in gt.columns:
+        sel.append(F.col("conference"))
+    else:
+        sel.append(F.lit(None).cast("string").alias("conference"))
+    if "division" in gt.columns:
+        sel.append(F.col("division"))
+    teams = gt.select(*sel)
+
+    # fallback da division
+    if "division" in teams.columns:
+        east_divs = F.array(F.lit("atlantic"), F.lit("central"), F.lit("southeast"))
+        west_divs = F.array(F.lit("northwest"), F.lit("pacific"), F.lit("southwest"))
+        div_n = F.lower(F.trim(F.col("division")))
+        conf_from_div = F.when(F.array_contains(east_divs, div_n), F.lit("East")) \
+                         .when(F.array_contains(west_divs, div_n), F.lit("West")) \
+                         .otherwise(F.lit(None))
+        teams = teams.withColumn(
+            "conference",
+            F.coalesce(F.col("conference"), conf_from_div)
+        )
+
+    # Prova TEAM_DETAILS / GLOBAL_TEAM_DETAILS
+    tbls = {t.name.upper() for t in spark.catalog.listTables()}
+    if "TEAM_DETAILS" in tbls or "GLOBAL_TEAM_DETAILS" in tbls:
+        det_name = "GLOBAL_TEAM_DETAILS" if "GLOBAL_TEAM_DETAILS" in tbls else "TEAM_DETAILS"
+        det = spark.table(det_name)
+        cols = {c.lower(): c for c in det.columns}
+        det_sel = det.select(
+            F.col(cols.get("team_id", "team_id")).cast("int").alias("team_id"),
+            *([F.col(cols["conference"]).alias("det_conference")] if "conference" in cols else []),
+            *([F.col(cols["division"]).alias("det_division")] if "division" in cols else [])
+        )
+        teams = (teams.alias("t")
+                 .join(det_sel.alias("d"), F.col("t.team_id") == F.col("d.team_id"), "left")
+                 .withColumn("conference",
+                             F.coalesce(
+                                 F.col("t.conference"),
+                                 F.col("d.det_conference"),
+                                 F.when(
+                                     F.lower(F.col("d.det_division")).isin("atlantic","central","southeast"), F.lit("East")
+                                 ).when(
+                                     F.lower(F.col("d.det_division")).isin("northwest","pacific","southwest"), F.lit("West")
+                                 )
+                             ))
+                 .select("t.team_id","t.team_name","t.city","conference"))
+
+    # Prova TEAM_INFO_COMMON
+    if "TEAM_INFO_COMMON" in tbls:
+        info = spark.table("TEAM_INFO_COMMON")
+        cols = {c.lower(): c for c in info.columns}
+        if "teamid" in cols:
+            inf = info.select(
+                F.col(cols["teamid"]).cast("int").alias("team_id"),
+                *([F.col(cols["conference"]).alias("inf_conference")] if "conference" in cols else [])
+            )
+            teams = (teams.alias("t")
+                     .join(inf.alias("i"), F.col("t.team_id") == F.col("i.team_id"), "left")
+                     .withColumn("conference", F.coalesce(F.col("t.conference"), F.col("i.inf_conference")))
+                     .select("t.team_id","t.team_name","t.city","conference"))
+
+    # normalizza + fallback da nome squadra
+    teams = teams.withColumn("_conf", F.lower(F.trim(F.coalesce(F.col("conference"), F.lit("")))))
+    teams = teams.withColumn(
+        "conference",
+        F.when(F.col("_conf").startswith(F.lit("e")), F.lit("East"))
+         .when(F.col("_conf").startswith(F.lit("w")), F.lit("West"))
+         .otherwise(F.lit(None))
+    ).drop("_conf")
+
+    east_names = [
+        "celtics","nets","knicks","76ers","bucks","cavaliers","bulls","pistons","pacers",
+        "hawks","hornets","heat","magic","raptors","wizards"
+    ]
+    west_names = [
+        "nuggets","grizzlies","warriors","clippers","suns","lakers","timberwolves","thunder",
+        "mavericks","pelicans","kings","trail blazers","jazz","rockets","spurs"
+    ]
+    teams = (teams
+             .withColumn("_name_norm", F.lower(F.trim(F.col("team_name"))))
+             .withColumn(
+                 "conference",
+                 F.coalesce(
+                     F.col("conference"),
+                     F.when(F.col("_name_norm").isin(*east_names), F.lit("East"))
+                      .when(F.col("_name_norm").isin(*west_names), F.lit("West"))
+                 )
+             )
+             .drop("_name_norm"))
+
+    return teams
+
+# --------------------------
+# Standings (by latest season year)
+# --------------------------
 
 
+@app.get("/standings")
+def standings(year: Optional[int] = Query(None, ge=1900, le=2100)):
+    """
+    Standings REGULAR SEASON (prime 82 gare per team), split East/West robusto:
+    - normalizza 'conference' aggressivamente (eastern, western, ecc.)
+    - deduce dalla 'division' (anche con 'DIVISION' o abbreviazioni ATL/CEN/SE/NW/PAC/SW)
+    - NESSUN fallback di parità: se non riconosciuto -> 'unknown'
+    - meta di debug con distinct tokens visti
+    """
+    if spark is None:
+        return {"season": None, "east": [], "west": [], "unknown": [], "meta": {"note": "service starting"}}
 
+    F_ = F
 
+    # 1) Base risultati
+    tbls = {t.name.upper() for t in spark.catalog.listTables()}
+    if "GAME_RESULT" in tbls:
+        base = (spark.table("GAME_RESULT")
+                .select(
+                    F_.col("game_date").cast("date").alias("date"),
+                    F_.col("home_team_id").cast("int").alias("home_id"),
+                    F_.col("away_team_id").cast("int").alias("away_id"),
+                    F_.col("home_pts"), F_.col("away_pts"),
+                ))
+    else:
+        g = spark.table("GLOBAL_GAME")
+        base = (g.select(
+            F_.col("game_date").cast("date").alias("date"),
+            F_.col("home_team_id").cast("int").alias("home_id"),
+            F_.col("away_team_id").cast("int").alias("away_id"),
+            F_.col("final_score_home").alias("home_pts"),
+            F_.col("final_score_away").alias("away_pts"),
+        ))
+    base = base.where(F_.col("home_pts").isNotNull() & F_.col("away_pts").isNotNull())
 
+    # 2) season_start (luglio = nuova stagione)
+    base_all = base.withColumn(
+        "season_start",
+        F_.when(F_.month(F_.col("date")) >= F_.lit(7), F_.year(F_.col("date")))
+         .otherwise(F_.year(F_.col("date")) - F_.lit(1))
+    )
+
+    # 3) Anno target
+    chosen_year = year
+    if chosen_year is None:
+        ys = (base_all.select(F_.col("season_start").alias("y"))
+                      .where(F_.col("y").isNotNull())
+                      .groupBy("y").count()
+                      .orderBy(F_.col("y").desc()))
+        years = [int(r["y"]) for r in ys.collect()] if ys is not None else []
+        chosen_year = years[0] if years else None
+
+    if chosen_year is not None:
+        base = base_all.where(F_.col("season_start") == F_.lit(chosen_year))
+        if base.limit(1).count() == 0:
+            ys = (base_all.select(F_.col("season_start").alias("y"))
+                          .where(F_.col("y").isNotNull())
+                          .groupBy("y").count()
+                          .orderBy(F_.col("y").desc()))
+            for y in [int(r["y"]) for r in ys.collect()]:
+                probe = base_all.where(F_.col("season_start") == F_.lit(y))
+                if probe.limit(1).count() > 0:
+                    base = probe
+                    chosen_year = y
+                    break
+
+    if base.limit(1).count() == 0:
+        return {"season": None, "east": [], "west": [], "unknown": [], "meta": {"note": "no games found"}}
+
+    # 4) Eventi per team e prime 82 gare
+    from pyspark.sql.window import Window
+    ev_home = base.select(
+        F_.col("date"),
+        F_.col("home_id").alias("team_id"),
+        F_.when(F_.col("home_pts") > F_.col("away_pts"), F_.lit(1)).otherwise(F_.lit(0)).alias("w"),
+        F_.when(F_.col("home_pts") > F_.col("away_pts"), F_.lit(0)).otherwise(F_.lit(1)).alias("l"),
+    )
+    ev_away = base.select(
+        F_.col("date"),
+        F_.col("away_id").alias("team_id"),
+        F_.when(F_.col("away_pts") > F_.col("home_pts"), F_.lit(1)).otherwise(F_.lit(0)).alias("w"),
+        F_.when(F_.col("away_pts") > F_.col("home_pts"), F_.lit(0)).otherwise(F_.lit(1)).alias("l"),
+    )
+    events = ev_home.unionByName(ev_away)
+    w_team_chrono = Window.partitionBy("team_id").orderBy(F_.col("date").asc())
+    events = events.withColumn("rn", F_.row_number().over(w_team_chrono))
+    reg = events.where(F_.col("rn") <= F_.lit(82))
+
+    # 5) Tally W/L per team
+    tally = reg.groupBy("team_id").agg(F_.sum("w").alias("w"), F_.sum("l").alias("l"))
+
+    # 6) Teams + conference using TEAM_CONFERENCE if available; else derive inline
+    teams = None
+    try:
+        tbls2 = {t.name.upper() for t in spark.catalog.listTables()}
+        if "TEAM_CONFERENCE" not in tbls2:
+            try:
+                _materialize_team_conference(spark)
+                tbls2 = {t.name.upper() for t in spark.catalog.listTables()}
+            except Exception:
+                pass
+        else:
+            # Rebuild if view exists but has no non-null conference
+            try:
+                nn = (
+                    spark.table("TEAM_CONFERENCE")
+                    .where(F_.col("conference").isNotNull())
+                    .limit(1)
+                    .count()
+                )
+                if int(nn) == 0:
+                    _materialize_team_conference(spark)
+            except Exception:
+                pass
+        if "TEAM_CONFERENCE" in tbls2:
+            teams = (
+                spark.table("TEAM_CONFERENCE")
+                .select(
+                    F_.col("team_id").cast("int").alias("team_id"),
+                    F_.col("team_name").alias("team_name"),
+                    F_.col("city").alias("city"),
+                    F_.col("conference").alias("conference"),
+                )
+                .alias("t")
+            )
+        else:
+            # robust fallback
+            td = _derive_team_conference(spark)
+            teams = (
+                td.select(
+                    F_.col("team_id").cast("int").alias("team_id"),
+                    F_.col("team_name").alias("team_name"),
+                    F_.col("city").alias("city"),
+                    F_.col("conference").alias("conference"),
+                )
+                .alias("t")
+            )
+    except Exception as _:
+        # last resort: minimal fields from GLOBAL_TEAM, conference unknown
+        gt = spark.table("GLOBAL_TEAM")
+        teams = (
+            gt.select(
+                F_.col("team_id").cast("int").alias("team_id"),
+                F_.col("team_name").alias("team_name"),
+                F_.col("city").alias("city"),
+                F_.lit(None).cast("string").alias("conference"),
+            )
+            .alias("t")
+        )
+
+    joined = (
+        tally.alias("ta")
+        .join(teams, F_.col("ta.team_id") == F_.col("t.team_id"), "left")
+        .select(
+            F_.col("t.team_id").cast("int").alias("team_id"),
+            F_.col("t.team_name").alias("name"),
+            F_.col("t.city").alias("city"),
+            F_.col("t.conference").alias("conference"),
+            F_.col("ta.w").cast("int").alias("w"),
+            F_.col("ta.l").cast("int").alias("l"),
+        )
+    )
+
+    # 7) Win% e Games Behind per conference
+    wconf = Window.partitionBy(F_.col("conference"))
+    joined = joined.withColumn(
+        "pct",
+        F_.when((F_.col("w") + F_.col("l")) > 0, F_.col("w") / (F_.col("w") + F_.col("l"))).otherwise(F_.lit(0.0))
+    )
+    leader_w = F_.max(F_.col("w")).over(wconf)
+    leader_l = F_.min(F_.col("l")).over(wconf)
+    joined = joined.withColumn("gb", ((leader_w - F_.col("w")) + (F_.col("l") - leader_l)) / F_.lit(2.0))
+
+    # 8) Streak
+    r = reg.select(
+        F_.col("date"),
+        F_.col("team_id"),
+        F_.when(F_.col("w") > F_.col("l"), F_.lit(1)).otherwise(F_.lit(-1)).alias("res"),
+    )
+    w_team = Window.partitionBy("team_id").orderBy(F_.col("date").asc())
+    r = r.withColumn("chg", F_.when(F_.col("res") != F_.lag(F_.col("res")).over(w_team), F_.lit(1)).otherwise(F_.lit(0)))
+    r = r.fillna({"chg": 0})
+    r = r.withColumn(
+        "grp",
+        F_.sum(F_.col("chg")).over(Window.partitionBy("team_id").orderBy(F_.col("date").asc())
+                                   .rowsBetween(Window.unboundedPreceding, 0))
+    )
+    g = (r.groupBy("team_id", "grp")
+           .agg(F_.count(F_.lit(1)).alias("len"), F_.max("date").alias("last_date"), F_.max("res").alias("sign")))
+    g_last = (g.join(g.groupBy("team_id").agg(F_.max("grp").alias("m")), ["team_id"])
+                .where(F_.col("grp") == F_.col("m"))
+                .select(F_.col("team_id"), F_.col("len").alias("streak_len"), F_.col("sign").alias("streak_sign")))
+    full = (joined.join(g_last, on="team_id", how="left")
+                  .withColumn(
+                      "streak",
+                      F_.when(F_.col("streak_len").isNull(), F_.lit(None))
+                       .otherwise(
+                           F_.when(F_.col("streak_sign") > 0, F_.concat(F_.lit("W"), F_.col("streak_len")))
+                            .otherwise(F_.concat(F_.lit("L"), F_.col("streak_len")))
+                       )
+                  ))
+
+    # 9) Split East/West/Unknown (NO fallback parità)
+    j2 = full.withColumn("_conf", F_.lower(F_.trim(F_.col("conference"))))
+    order_cols = [F_.col("w").desc(), F_.col("l").asc(), F_.col("name").asc()]
+
+    east_df = (j2.where(F_.col("_conf") == F_.lit("east"))
+                 .dropDuplicates(["team_id"])
+                 .orderBy(*order_cols))
+    west_df = (j2.where(F_.col("_conf") == F_.lit("west"))
+                 .dropDuplicates(["team_id"])
+                 .orderBy(*order_cols))
+    unknown_df = (j2.where(F_.col("_conf").isNull() | ((F_.col("_conf") != F_.lit("east")) & (F_.col("_conf") != F_.lit("west"))))
+                    .dropDuplicates(["team_id"])
+                    .orderBy(*order_cols))
+
+    def to_list(df):
+        return [
+            {
+                "id": str(r["team_id"]) if r["team_id"] is not None else None,
+                "name": r["name"],
+                "city": r["city"],
+                "conference": r["conference"],
+                "w": int(r["w"]) if r["w"] is not None else 0,
+                "l": int(r["l"]) if r["l"] is not None else 0,
+                "pct": float(r["pct"]) if r["pct"] is not None else 0.0,
+                "gb": float(r["gb"]) if r["gb"] is not None else 0.0,
+                "streak": r["streak"],
+            }
+            for r in df.collect()
+        ]
+
+    east = to_list(east_df)
+    west = to_list(west_df)
+    unknown = to_list(unknown_df)
+
+    meta = {
+        "season": int(chosen_year) if chosen_year is not None else None,
+        "counts": {
+            "games": int(base.count()),
+            "teams_wl": int(tally.count()),
+            "east": len(east),
+            "west": len(west),
+            "unknown": len(unknown),
+        },
+    }
+
+    return {"season": meta["season"], "east": east, "west": west, "unknown": unknown, "meta": meta}

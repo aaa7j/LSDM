@@ -32,8 +32,8 @@ body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 
 
 /* Containers */
 .rel { position: relative; }
-.wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
-.home { display: grid; grid-template-columns: 1.4fr .8fr; gap: 16px; margin-top: 18px; }
+.wrap { max-width: 1280px; margin: 24px auto; padding: 0 16px; }
+.home { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; margin-top: 18px; }
 .home .section { background: linear-gradient(180deg, var(--card), #0d141d); border: 1px solid var(--border); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
 .home .section .title { font-size: 16px; font-weight: 800; margin-bottom: 8px; }
 
@@ -45,9 +45,15 @@ body { margin: 0; background: radial-gradient(1200px 800px at 20% -10%, #152033 
 .list a:hover { text-decoration: underline; }
 .standings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
 .standings .conf { background: #0e1722; border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
-.standings .conf .title { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-.standings .team { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #1c2a3c; }
+.standings .conf .title { font-size: 13px; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; }
+.standings .head,
+.standings .team { display: grid; grid-template-columns: 1fr 70px 48px 64px; gap: 8px; align-items: center; }
+.standings .head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; border-bottom: 1px dashed #1c2a3c; padding-bottom: 4px; margin-bottom: 4px; }
+.standings .team { padding: 4px 0; border-bottom: 1px dashed #1c2a3c; }
 .standings .team:last-child { border-bottom: 0; }
+.standings .col-name a { color: var(--fg); text-decoration: none; }
+.standings .col-name a:hover { text-decoration: underline; }
+.standings .col-wl, .standings .col-gb, .standings .col-streak { text-align: right; font-variant-numeric: tabular-nums; }
 .search-box { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
 .search-box .input { width: 100%; font-size: 16px; padding: 12px 14px; }
 .card { background: linear-gradient(180deg, var(--card), #0d141d); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; align-items: center; gap: 12px; box-shadow: var(--shadow); animation: fadeIn .25s ease both; }

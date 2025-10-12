@@ -191,6 +191,18 @@
 
       wireSuggest(home, sh);
       wireSuggest(away, sa);
+
+      // Pre-fill from query params and auto-run
+      try {
+        const u = new URL(location.href);
+        const hp = (u.searchParams.get('home') || '').trim();
+        const ap = (u.searchParams.get('away') || '').trim();
+        const dp = (u.searchParams.get('date') || '').trim();
+        if (hp) home.value = hp;
+        if (ap) away.value = ap;
+        if (dp) date.valueAsDate = new Date(dp);
+        if (hp && ap) predict();
+      } catch {}
     </script>
   </body>
   </html>
