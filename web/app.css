@@ -227,8 +227,13 @@ mark { color: inherit; background: linear-gradient(90deg, rgba(62,166,255,.2), r
  
 /* Home inline prediction */
 .inline-predict { display: flex; justify-content: center; }
-.inline-predict-row { display: grid; grid-template-columns: repeat(2, 260px); gap: 12px; align-items: end; }
-.inline-predict .input { padding-left: 14px; }
+.inline-predict-row { display: grid; grid-template-columns: minmax(280px, 1fr) 40px minmax(280px, 1fr); gap: 12px; align-items: end; }
+.inline-predict-row .swap-col { align-self: end; }
+.home .row .swap-col { align-self: end; }
+.inline-predict .input { padding: 12px 14px; font-size: 16px; }
+.home .row .input { padding: 12px 14px; font-size: 16px; }
+/* Tiny badge for H/A next to labels */
+.badge-mini { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border:1px solid var(--border); border-radius:6px; font-size:10px; line-height:1; color: var(--muted); margin-left:6px; }
 .inline-predict-actions { display: flex; justify-content: center; margin-top: 10px; }
 
 /* Loading bar */
@@ -279,9 +284,14 @@ mark { color: inherit; background: linear-gradient(90deg, rgba(62,166,255,.2), r
   border: 2px solid var(--border); /* bordino grigio di default */
   background: linear-gradient(180deg, #0f1826, #101723);
   box-shadow: none;
-  color: var(--fg); font-weight: 900; font-size: 16px;
+  color: var(--fg); font-weight: 900; font-size: 0; /* hide text, use icon */
   display:flex; align-items:center; justify-content:center;
   transition: transform .12s ease, box-shadow .2s ease, filter .15s ease, border-color .15s ease;
+}
+.swap-btn::before {
+  content: '';
+  width: 18px; height: 18px; display: block;
+  background: no-repeat center / contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='%23e9eef5'%3E%3Cpath d='M7 7h11l-3.5-3.5 1.4-1.4L22 8l-6.1 6.1-1.4-1.4L18 9H7V7zm10 10H6l3.5 3.5-1.4 1.4L2 16l6.1-6.1 1.4 1.4L6 15h11v2z'/%3E%3C/svg%3E");
 }
 .swap-btn:hover { transform: none; box-shadow: none; filter: none; border-color: var(--accent); }
 .swap-btn:active { transform: translateY(0) scale(0.98); box-shadow: none; }
