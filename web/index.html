@@ -78,17 +78,21 @@
           </div>
           <div class="list" id="predict-inline" style="margin-top:12px">
             <div class="title">Prediction</div>
-            <div class="row" style="display:grid; grid-template-columns: 1fr 1fr auto; gap:8px; align-items:end;">
-              <div class="rel">
-                <label class="sub" for="pred-home" style="display:block;margin:0 0 4px;">Home team</label>
-                <input id="pred-home" class="input" type="text" placeholder="e.g. Lakers" autocomplete="off" aria-autocomplete="list" />
-                <div id="sugg-pred-home" class="suggest" style="display:none"></div>
+            <div class="inline-predict">
+              <div class="inline-predict-row">
+                <div class="rel">
+                  <label class="sub" for="pred-home" style="display:block;margin:0 0 4px;">Home team</label>
+                  <input id="pred-home" class="input" type="text" placeholder="e.g. Lakers" autocomplete="off" aria-autocomplete="list" />
+                  <div id="sugg-pred-home" class="suggest" style="display:none"></div>
+                </div>
+                <div class="rel">
+                  <label class="sub" for="pred-away" style="display:block;margin:0 0 4px;">Away team</label>
+                  <input id="pred-away" class="input" type="text" placeholder="e.g. Celtics" autocomplete="off" aria-autocomplete="list" />
+                  <div id="sugg-pred-away" class="suggest" style="display:none"></div>
+                </div>
               </div>
-              <div class="rel">
-                <label class="sub" for="pred-away" style="display:block;margin:0 0 4px;">Away team</label>
-                <input id="pred-away" class="input" type="text" placeholder="e.g. Celtics" autocomplete="off" aria-autocomplete="list" />
-                <div id="sugg-pred-away" class="suggest" style="display:none"></div>
-              </div>
+            </div>
+            <div class="inline-predict-actions">
               <button id="btnPred" class="btn">Start Prediction</button>
             </div>
           </div>

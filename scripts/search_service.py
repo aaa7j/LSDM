@@ -40,6 +40,9 @@ import json  # (se usi risposte debug)
 
 _MEM_PLAYERS: List[dict] = []  # list of dicts
 _MEM_TEAMS: List[dict] = []    # list of dicts
+_STANDINGS_CACHE = {}
+_STANDINGS_TTL_SECONDS = int(os.environ.get("STANDINGS_TTL_SECONDS", "600"))
+STANDINGS_CACHE_DIR = os.environ.get("STANDINGS_CACHE_DIR", os.path.join("metadata", "cache", "standings"))
 
 def _norm(s: str) -> str:
     import re as _re
@@ -440,7 +443,7 @@ def _ensure_prediction_views(spark: SparkSession) -> None:
             SELECT game_date, home_team_id AS team_id, CAST(home_pts - away_pts AS DOUBLE) AS diff
             FROM GAME_RESULT WHERE game_date >= {cutoff_expr}
             UNION ALL
-            SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) * (-1.0) AS diff
+            SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) AS diff
             FROM GAME_RESULT WHERE game_date >= {cutoff_expr}
             """
         )
@@ -450,7 +453,7 @@ def _ensure_prediction_views(spark: SparkSession) -> None:
             CREATE OR REPLACE TEMP VIEW TEAM_DAILY_DIFF AS
             SELECT game_date, home_team_id AS team_id, CAST(home_pts - away_pts AS DOUBLE) AS diff FROM GAME_RESULT
             UNION ALL
-            SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) * (-1.0) AS diff FROM GAME_RESULT
+            SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) AS diff FROM GAME_RESULT
             """
         )
 
@@ -611,12 +614,51 @@ app = FastAPI(title="LSDM Search Service", version="1.0.0")
 # Global Spark handle (initialized on startup)
 spark: Optional[SparkSession] = None
 outcome_model: Optional[PipelineModel] = None
-MODEL_DIR = os.environ.get("OUTCOME_MODEL_DIR", os.path.join("models", "home-win"))
+MODEL_DIR = os.environ.get("OUTCOME_MODEL_DIR", os.path.join("models", "outcome-full"))
 FORM_WINDOW = int(os.environ.get("FORM_WINDOW", "10"))
 # Default to 1 year as requested
 FORM_YEARS = int(os.environ.get("FORM_YEARS", "1"))
 ACTIVE_FORM_WINDOW = FORM_WINDOW
 ACTIVE_FORM_YEARS = FORM_YEARS
+
+def _train_outcome_quick(spark: SparkSession) -> Optional[PipelineModel]:
+    try:
+        # Ensure views ready
+        _ensure_prediction_views(spark)
+        train_df = spark.sql(
+            """
+            SELECT r.game_id,
+                   CAST(CASE WHEN r.home_pts > r.away_pts THEN 1 ELSE 0 END AS INT) AS label,
+                   AVG(COALESCE(h.cum_avg_diff, 0.0) - COALESCE(a.cum_avg_diff, 0.0)) AS expected_diff
+            FROM GAME_RESULT r
+            LEFT JOIN TEAM_CUMAVG h ON h.team_id = r.home_team_id AND h.game_date < r.game_date
+            LEFT JOIN TEAM_CUMAVG a ON a.team_id = r.away_team_id AND a.game_date < r.game_date
+            GROUP BY r.game_id, r.home_pts, r.away_pts
+            """
+        ).where(F.col("expected_diff").isNotNull())
+
+        # Check both classes present
+        lbl = [r[0] for r in train_df.groupBy("label").count().collect()]
+        if len(lbl) < 2:
+            print("[WARN] Training aborted: single class. Keeping previous model if any.")
+            return None
+
+        assembler = VectorAssembler(inputCols=["expected_diff"], outputCol="features")
+        lr = LogisticRegression(featuresCol="features", labelCol="label", maxIter=100)
+        pipe = Pipeline(stages=[assembler, lr])
+        model = pipe.fit(train_df)
+
+        # Optionally persist
+        try:
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            model.write().overwrite().save(MODEL_DIR)
+            print(f"[OK] Outcome model retrained and saved to {MODEL_DIR}")
+        except Exception as e:
+            print(f"[WARN] Could not persist outcome model: {e}")
+        return model
+    except Exception as e:
+        print(f"[WARN] Quick training failed: {e}")
+        return None
 
 @app.on_event("startup")
 def _on_startup():
@@ -658,14 +700,67 @@ def _on_startup():
     # Load model if present; otherwise keep unavailable (no training here)
     try:
         model_path_ok = os.path.isdir(MODEL_DIR) and os.path.isdir(os.path.join(MODEL_DIR, "stages"))
-        if model_path_ok:
+        retrain = os.environ.get("RETRAIN_OUTCOME", "0") in ["1","true","yes"]
+        if model_path_ok and not retrain:
             outcome_model = PipelineModel.load(MODEL_DIR)
             print(f"[OK] Outcome model loaded from {MODEL_DIR}")
         else:
-            print(f"[WARN] Outcome model not found at {MODEL_DIR}. Use scripts/train_outcome.py to train it.")
+            print("[INFO] Training lightweight outcome model (cum-avg diff, 1y window)...")
+            m = _train_outcome_quick(spark)
+            if m is not None:
+                outcome_model = m
+            elif model_path_ok:
+                outcome_model = PipelineModel.load(MODEL_DIR)
+                print(f"[OK] Outcome model loaded from {MODEL_DIR}")
+            else:
+                print(f"[WARN] Outcome model not available.")
     except Exception as e:
         print(f"[WARN] Outcome model load/train failed: {e}")
     # (legacy training block removed: serving is load-only)
+
+    # Prewarm standings cache asynchronously (latest season) for faster first paint
+    try:
+        do_prewarm = os.environ.get("PREWARM_STANDINGS", "1") in ["1", "true", "yes"]
+        if do_prewarm:
+            import threading as _th
+
+            def _prewarm_worker():
+                try:
+                    tbls = {t.name.upper() for t in spark.catalog.listTables()}
+                    source = "GAME_RESULT" if "GAME_RESULT" in tbls else "GLOBAL_GAME"
+                    row = spark.table(source).select(F.max(F.col("game_date").cast("date")).alias("d")).limit(1).collect()[0]
+                    last = row["d"] if row else None
+                    if not last:
+                        return
+                    season = int(last.year - (0 if last.month >= 7 else 1))
+                    # Try load persisted JSON first
+                    try:
+                        path = os.path.join(STANDINGS_CACHE_DIR, f"{season}.json")
+                        if os.path.isfile(path):
+                            with open(path, "r", encoding="utf-8") as fh:
+                                data = json.load(fh)
+                            import time as _time
+                            _STANDINGS_CACHE[("standings", season)] = (_time.time(), data)
+                            print(f"[INIT] Standings cache loaded for season {season} from {path}")
+                            return
+                    except Exception:
+                        pass
+                    # Compute and persist
+                    res = standings(season)  # type: ignore[arg-type]
+                    try:
+                        os.makedirs(STANDINGS_CACHE_DIR, exist_ok=True)
+                        path = os.path.join(STANDINGS_CACHE_DIR, f"{season}.json")
+                        with open(path, "w", encoding="utf-8") as fh:
+                            json.dump(res, fh)
+                        print(f"[INIT] Standings season {season} persisted to {path}")
+                    except Exception as e:
+                        print(f"[WARN] Persist standings cache failed: {e}")
+                except Exception as e:
+                    print(f"[WARN] Standings prewarm failed: {e}")
+
+            _th.Thread(target=_prewarm_worker, daemon=True).start()
+    except Exception as e:
+        print(f"[WARN] Could not start standings prewarm: {e}")
 
 @app.on_event("shutdown")
 def _on_shutdown():
@@ -976,12 +1071,72 @@ def _resolve_team_id(token: str) -> Optional[int]:
          .collect()
     )
     return int(cand[0][0]) if cand else None
+def _build_outcome_features_full(spark: SparkSession, home_id: int, away_id: int, cutoff: str):
+    cutoff_date = F.to_date(F.lit(cutoff))
+    tdd = spark.table("TEAM_DAILY_DIFF").select("team_id", "game_date", "diff")
+    def roll10(team: int) -> float:
+        rows = (tdd.where((F.col("team_id") == F.lit(int(team))) & (F.col("game_date") < cutoff_date))
+                  .orderBy(F.col("game_date").desc())
+                  .select("diff").limit(10).collect())
+        vals = [float(r[0]) for r in rows if r[0] is not None]
+        return float(sum(vals) / len(vals)) if vals else 0.0
+    h10 = roll10(home_id)
+    a10 = roll10(away_id)
+    expected_diff = float(h10 - a10)
+    def rest_days(team: int) -> int:
+        rows = (tdd.where((F.col("team_id") == F.lit(int(team))) & (F.col("game_date") < cutoff_date))
+                  .orderBy(F.col("game_date").desc())
+                  .select("game_date").limit(2).collect())
+        if len(rows) < 2:
+            return 3
+        try:
+            return int((rows[0][0] - rows[1][0]).days)
+        except Exception:
+            return 3
+    home_rest = rest_days(home_id); away_rest = rest_days(away_id)
+    rest_diff = float((home_rest or 0) - (away_rest or 0))
+    b2b_any = float(1.0 if (home_rest <= 1 or away_rest <= 1) else 0.0)
+    g = spark.table("GLOBAL_GAME").select(
+        F.col("game_id").cast("string").alias("gid"),
+        F.col("location").alias("location"),
+        F.col("home_team_id").cast("int").alias("home_team_id"),
+    )
+    r = spark.table("GAME_RESULT").select(
+        F.col("game_id").cast("string").alias("rgid"),
+        (F.col("home_pts") > F.col("away_pts")).cast("int").alias("home_win"),
+    )
+    arena_key = str(home_id)
+    base = g.join(r, g["gid"] == r["rgid"], "inner").withColumn(
+        "arena", F.coalesce(F.col("location"), F.col("home_team_id").cast("string"))
+    )
+    stats = (base.where(F.col("arena") == F.lit(arena_key))
+                  .agg(F.count(F.lit(1)).alias("games"), F.sum("home_win").alias("hw")).collect())
+    if stats and stats[0]["games"] and stats[0]["games"] > 0:
+        arena_home_edge = float((float(stats[0]["hw"]) + 3.0) / (float(stats[0]["games"]) + 6.0))
+    else:
+        arena_home_edge = 0.5
+    from datetime import datetime
+    import math as _m
+    dt = datetime.strptime(cutoff, "%Y-%m-%d")
+    month = dt.month; dow = dt.isoweekday() % 7
+    month_sin = _m.sin(2*_m.pi*month/12.0); month_cos = _m.cos(2*_m.pi*month/12.0)
+    dow_sin = _m.sin(2*_m.pi*dow/7.0); dow_cos = _m.cos(2*_m.pi*dow/7.0)
+    rows = [{
+        "arena_home_edge": arena_home_edge,
+        "expected_diff": expected_diff,
+        "rest_diff": rest_diff,
+        "b2b_any": b2b_any,
+        "month_sin": month_sin,
+        "month_cos": month_cos,
+        "dow_sin": dow_sin,
+        "dow_cos": dow_cos,
+    }]
+    return spark.createDataFrame(rows)
 
 @app.get("/predict")
 def predict(
     home: str = Query(..., description="Home team (id or name)"),
     away: str = Query(..., description="Away team (id or name)"),
-    date: Optional[str] = Query(None, description="Cutoff date YYYY-MM-DD (optional)"),
 ):
     if spark is None:
         return {"error": "service starting"}
@@ -993,25 +1148,23 @@ def predict(
     if not home_id or not away_id:
         return {"error": "unable to resolve team ids", "home": home, "away": away}
 
-    # Determine cutoff date
-    cutoff = date
-    if not cutoff:
-        tbls = {t.name for t in spark.catalog.listTables()}
-        base = "GAME_RESULT" if "GAME_RESULT" in tbls else "GLOBAL_GAME"
-        last = spark.table(base).select(F.max(F.col("game_date").cast("date")).alias("d")).collect()[0]["d"]
-        cutoff = str(last)
+    # Determine cutoff date (always latest available); training horizon fixed to last 1 year via views
+    tbls = {t.name for t in spark.catalog.listTables()}
+    base = "GAME_RESULT" if "GAME_RESULT" in tbls else "GLOBAL_GAME"
+    last = spark.table(base).select(F.max(F.col("game_date").cast("date")).alias("d")).collect()[0]["d"]
+    cutoff = str(last)
 
     # Compute single-row expected_diff using TEAM_CUMAVG views (built during training)
     try:
-        q = f"""
-        SELECT
-          (COALESCE(h.cum, 0.0) - COALESCE(a.cum, 0.0)) AS expected_diff
-        FROM
-          (SELECT AVG(cum_avg_diff) AS cum FROM TEAM_CUMAVG WHERE team_id = {home_id} AND game_date < TO_DATE('{cutoff}')) h
-        CROSS JOIN
-          (SELECT AVG(cum_avg_diff) AS cum FROM TEAM_CUMAVG WHERE team_id = {away_id} AND game_date < TO_DATE('{cutoff}')) a
-        """
-        feats = spark.sql(q)
+        feats = _build_outcome_features_full(spark, int(home_id), int(away_id), cutoff)
+
+
+
+
+
+
+
+
     except Exception as e:
         return {"error": f"feature build failed: {e}"}
 
@@ -1036,9 +1189,6 @@ def predict(
         "p_home_win": p_home,
         "p_away_win": p_away,
         "winner": winner,
-        "feature": "expected_diff(cum-avg)",
-        "cutoff": cutoff,
-        "train_years": int(os.environ.get("TRAIN_YEARS", "1")),
     }
 
 # --- CORS (useful for local dev/frontends) ---
@@ -1066,6 +1216,20 @@ def predict_page():
     """Serve a minimal prediction UI."""
     index_path = os.path.join(static_dir, "predict.html")
     return FileResponse(index_path) if os.path.isfile(index_path) else {"message": "UI not found. Create web/predict.html."}
+
+@app.post("/admin/retrain-outcome")
+def admin_retrain_outcome():
+    if spark is None:
+        return {"status": "starting"}
+    try:
+        global outcome_model
+        m = _train_outcome_quick(spark)
+        if m is not None:
+            outcome_model = m
+            return {"status": "ok", "saved_to": MODEL_DIR}
+        return {"status": "error", "error": "training returned no model"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 @app.post("/admin/materialize/team-conference")
 def admin_materialize_team_conference(persist: bool = True):
@@ -1423,68 +1587,71 @@ def _derive_team_conference(spark: SparkSession):
 @app.get("/standings")
 def standings(year: Optional[int] = Query(None, ge=1900, le=2100)):
     """
-    Standings REGULAR SEASON (prime 82 gare per team), split East/West robusto:
-    - normalizza 'conference' aggressivamente (eastern, western, ecc.)
-    - deduce dalla 'division' (anche con 'DIVISION' o abbreviazioni ATL/CEN/SE/NW/PAC/SW)
-    - NESSUN fallback di parità: se non riconosciuto -> 'unknown'
-    - meta di debug con distinct tokens visti
+    Standings REGULAR SEASON (first 82 games), robust East/West split:
+    - normalize conference aggressively (eastern, western, etc.)
+    - derive from division (abbrev ATL/CEN/SE/NW/PAC/SW supported)
+    - no parity fallback: if unknown -> "unknown"
+    - debug meta with distinct tokens
     """
     if spark is None:
         return {"season": None, "east": [], "west": [], "unknown": [], "meta": {"note": "service starting"}}
 
     F_ = F
 
-    # 1) Base risultati
+    # 1) Sorgente e anno target (calcolo veloce)
+    import datetime as _dt
     tbls = {t.name.upper() for t in spark.catalog.listTables()}
-    if "GAME_RESULT" in tbls:
-        base = (spark.table("GAME_RESULT")
-                .select(
-                    F_.col("game_date").cast("date").alias("date"),
-                    F_.col("home_team_id").cast("int").alias("home_id"),
-                    F_.col("away_team_id").cast("int").alias("away_id"),
-                    F_.col("home_pts"), F_.col("away_pts"),
-                ))
-    else:
-        g = spark.table("GLOBAL_GAME")
-        base = (g.select(
-            F_.col("game_date").cast("date").alias("date"),
-            F_.col("home_team_id").cast("int").alias("home_id"),
-            F_.col("away_team_id").cast("int").alias("away_id"),
-            F_.col("final_score_home").alias("home_pts"),
-            F_.col("final_score_away").alias("away_pts"),
-        ))
-    base = base.where(F_.col("home_pts").isNotNull() & F_.col("away_pts").isNotNull())
-
-    # 2) season_start (luglio = nuova stagione)
-    base_all = base.withColumn(
-        "season_start",
-        F_.when(F_.month(F_.col("date")) >= F_.lit(7), F_.year(F_.col("date")))
-         .otherwise(F_.year(F_.col("date")) - F_.lit(1))
+    source = "GAME_RESULT" if "GAME_RESULT" in tbls else "GLOBAL_GAME"
+    maxd_row = (
+        spark.table(source)
+        .select(F_.max(F_.col("game_date").cast("date")).alias("d"))
+        .collect()
     )
+    last_date = maxd_row[0]["d"] if maxd_row and maxd_row[0] and maxd_row[0]["d"] else None
+    chosen_year = int(year) if year is not None else (last_date.year - (0 if last_date and last_date.month >= 7 else 1) if last_date else None)
 
-    # 3) Anno target
-    chosen_year = year
+    # Cache: ritorna risultato memorizzato se recente
+    try:
+        import time as _time
+        key = ("standings", chosen_year)
+        ent = _STANDINGS_CACHE.get(key)
+        if ent and (_time.time() - ent[0] <= _STANDINGS_TTL_SECONDS):
+            return ent[1]
+    except Exception:
+        pass
+
+    # 2) Base risultati solo per la stagione selezionata (range date, evita colonna season_start)
+    if source == "GAME_RESULT":
+        g = (
+            spark.table("GAME_RESULT").select(
+                F_.col("game_date").cast("date").alias("date"),
+                F_.col("home_team_id").cast("int").alias("home_id"),
+                F_.col("away_team_id").cast("int").alias("away_id"),
+                F_.col("home_pts"),
+                F_.col("away_pts"),
+            )
+        )
+    else:
+        gg = spark.table("GLOBAL_GAME")
+        g = (
+            gg.select(
+                F_.col("game_date").cast("date").alias("date"),
+                F_.col("home_team_id").cast("int").alias("home_id"),
+                F_.col("away_team_id").cast("int").alias("away_id"),
+                F_.col("final_score_home").alias("home_pts"),
+                F_.col("final_score_away").alias("away_pts"),
+            )
+        )
     if chosen_year is None:
-        ys = (base_all.select(F_.col("season_start").alias("y"))
-                      .where(F_.col("y").isNotNull())
-                      .groupBy("y").count()
-                      .orderBy(F_.col("y").desc()))
-        years = [int(r["y"]) for r in ys.collect()] if ys is not None else []
-        chosen_year = years[0] if years else None
-
-    if chosen_year is not None:
-        base = base_all.where(F_.col("season_start") == F_.lit(chosen_year))
-        if base.limit(1).count() == 0:
-            ys = (base_all.select(F_.col("season_start").alias("y"))
-                          .where(F_.col("y").isNotNull())
-                          .groupBy("y").count()
-                          .orderBy(F_.col("y").desc()))
-            for y in [int(r["y"]) for r in ys.collect()]:
-                probe = base_all.where(F_.col("season_start") == F_.lit(y))
-                if probe.limit(1).count() > 0:
-                    base = probe
-                    chosen_year = y
-                    break
+        return {"season": None, "east": [], "west": [], "unknown": [], "meta": {"note": "no season found"}}
+    start = F_.to_date(F_.lit(f"{chosen_year}-07-01"))
+    end = F_.to_date(F_.lit(f"{chosen_year+1}-06-30"))
+    base = (
+        g.where((F_.col("home_pts").isNotNull()) & (F_.col("away_pts").isNotNull()))
+         .where((F_.col("date") >= start) & (F_.col("date") <= end))
+    )
+    if base.limit(1).count() == 0:
+        return {"season": None, "east": [], "west": [], "unknown": [], "meta": {"note": "no games found"}}
 
     if base.limit(1).count() == 0:
         return {"season": None, "east": [], "west": [], "unknown": [], "meta": {"note": "no games found"}}
@@ -1506,7 +1673,7 @@ def standings(year: Optional[int] = Query(None, ge=1900, le=2100)):
     events = ev_home.unionByName(ev_away)
     w_team_chrono = Window.partitionBy("team_id").orderBy(F_.col("date").asc())
     events = events.withColumn("rn", F_.row_number().over(w_team_chrono))
-    reg = events.where(F_.col("rn") <= F_.lit(82))
+    reg = events.where(F_.col("rn") <= F_.lit(82)).cache()
 
     # 5) Tally W/L per team
     tally = reg.groupBy("team_id").agg(F_.sum("w").alias("w"), F_.sum("l").alias("l"))
@@ -1572,7 +1739,7 @@ def standings(year: Optional[int] = Query(None, ge=1900, le=2100)):
 
     joined = (
         tally.alias("ta")
-        .join(teams, F_.col("ta.team_id") == F_.col("t.team_id"), "left")
+        .join(F_.broadcast(teams), F_.col("ta.team_id") == F_.col("t.team_id"), "left")
         .select(
             F_.col("t.team_id").cast("int").alias("team_id"),
             F_.col("t.team_name").alias("name"),
@@ -1667,4 +1834,16 @@ def standings(year: Optional[int] = Query(None, ge=1900, le=2100)):
         },
     }
 
-    return {"season": meta["season"], "east": east, "west": west, "unknown": unknown, "meta": meta}
+    result = {"season": meta["season"], "east": east, "west": west, "unknown": unknown, "meta": meta}
+    try:
+        import time as _time
+        _STANDINGS_CACHE[("standings", int(chosen_year))] = (_time.time(), result)
+    except Exception:
+        pass
+    return result
+
+
+
+
+
+

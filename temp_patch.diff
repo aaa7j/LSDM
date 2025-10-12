@@ -1,0 +1,18 @@
+*** Begin Patch
+*** Update File: web/predict.html
+@@
+-  <div class="wrap"><div class="predict-page"><div>
++  <div class="page predict-page">
++    <div class="wrap">
+@@
+-    </form>
+-  </div>
++    </form>
++    </div>
++  </div>
+@@
+-    </script>
+-  </body>
++    </script>
++  </body>
+*** End Patch

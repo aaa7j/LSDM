@@ -1,138 +1,151 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Predict Game Outcome</title>
-    <style>
-      :root {
-        --bg: #0b0f14;
-        --card: #121821;
-        --fg: #e9eef5;
-        --muted: #9db0c7;
-        --accent: #3ea6ff;
-        --border: #223044;
-        --win: #72f0a9;
-        --loss: #ff8a8a;
-      }
-      body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, Arial, sans-serif; }
-      .wrap { max-width: 900px; margin: 32px auto; padding: 0 16px; }
-      h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
-      a { color: var(--accent); text-decoration: none; }
-      .box { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-      label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-      input[type="text"], input[type="date"] { width: 100%; padding: 10px 12px; background: #0e141c; border: 1px solid var(--border); color: var(--fg); border-radius: 6px; }
-      .rel { position: relative; }
-      .suggest { position: absolute; left: 0; right: 0; top: 56px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; z-index: 10; max-height: 240px; overflow-y: auto; box-shadow: 0 8px 14px rgba(0,0,0,0.2); }
-      .s-item { padding: 8px 12px; cursor: pointer; display: grid; grid-template-columns: 72px 1fr; gap: 8px; align-items: center; }
-      .s-item:hover, .s-item.active { background: #0e141c; }
-      .s-entity { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; text-transform: uppercase; text-align: center; }
-      .s-title { font-weight: 600; }
-      .s-sub { font-size: 12px; color: var(--muted); }
-      .controls { display: flex; gap: 10px; align-items: end; margin-top: 12px; }
-      button { padding: 10px 14px; background: var(--accent); color: #00111f; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; }
-      button:disabled { opacity: .6; cursor: default; }
-      .meta { margin-top: 10px; color: var(--muted); font-size: 12px; }
-      .error { color: #ff6b6b; margin-top: 10px; }
-      .result { margin-top: 16px; display: grid; gap: 8px; }
-      .winner { font-size: 18px; font-weight: 700; }
-      .prob { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-      footer { margin: 20px 0; color: var(--muted); font-size: 12px; }
-    </style>
+    <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body>
-    <div class="wrap">
-      <h1>Predict Game Outcome</h1>
-      <div class="meta"><a href="/">← Back to Search</a></div>
-      <div class="box">
-        <div class="row">
-          <div class="rel">
-            <label for="home">Home team (id or name)</label>
-            <input id="home" type="text" placeholder="e.g. Lakers or 1610612747" autocomplete="off" aria-autocomplete="list" />
-            <div id="sugg-home" class="suggest" style="display:none"></div>
-          </div>
-          <div class="rel">
-            <label for="away">Away team (id or name)</label>
-            <input id="away" type="text" placeholder="e.g. Celtics or 1610612738" autocomplete="off" aria-autocomplete="list" />
-            <div id="sugg-away" class="suggest" style="display:none"></div>
-          </div>
-        </div>
-        <div class="controls">
-          <div style="flex:1">
-            <label for="date">Cutoff date (optional)</label>
-            <input id="date" type="date" />
-          </div>
-          <div>
-            <button id="btn">Predict</button>
-          </div>
-        </div>
-        <div class="error" id="err"></div>
-        <div class="result" id="res"></div>
+  <div class="topbar">
+    <div class="inner">
+      <a class="brand" href="/" onclick="if (location.protocol==='file:'){location.href='index.html'; return false;}">NBA Search</a>
+      <div class="nav">
+        <a href="/">Search</a>
+        <a href="/predict-ui">Predict</a>
       </div>
-      <footer>
-        Uses last-year rolling form with home advantage.
-      </footer>
     </div>
+  </div>
+
+
+  <div class="page predict-page">
+    <div class="wrap">
+    <div class="predict-hero">
+      <h1 class="fade-in">Predict Game Outcome</h1>
+      <p class="sub">Choose the <b>home</b> and <b>away</b> teams. We estimate win probabilities using recent form (last year), rest and an arena/home baseline for a realistic split.</p>
+    </div>
+
+
+    <form id="formPredict" class="card predict-card" autocomplete="off" novalidate>
+      <div class="predict-row">
+        <!-- Home field -->
+        <div class="rel predict-field field">
+          <label for="home" class="label">Home team</label>
+          <div class="input-wrap">
+            <span class="prefix" aria-hidden>🏠</span>
+              <input id="home" class="input" type="text" placeholder="e.g. Lakers" aria-autocomplete="list" />
+            <button type="button" class="icon-btn clear" id="clearHome" title="Clear" aria-label="Clear home team">✕</button>
+          </div>
+          <div class="hint">Type a name or team id</div>
+          <div id="sugg-home" class="suggest" style="display:none"></div>
+        </div>
+
+        <!-- Swap button on small screens moves below -->
+        <div class="swap-col">
+          <button type="button" class="icon-btn swap-btn" id="swapBtn" title="Swap home/away" aria-label="Swap home and away">⇅</button>
+        </div>
+
+        <!-- Away field -->
+        <div class="rel predict-field field">
+          <label for="away" class="label">Away team</label>
+          <div class="input-wrap">
+            <span class="prefix" aria-hidden>🛫</span>
+              <input id="away" class="input" type="text" placeholder="e.g. Celtics" aria-autocomplete="list" />
+            <button type="button" class="icon-btn clear" id="clearAway" title="Clear" aria-label="Clear away team">✕</button>
+          </div>
+          <div class="hint">Type a name or team id</div>
+          <div id="sugg-away" class="suggest" style="display:none"></div>
+        </div>
+      </div>
+
+
+      <div id="loading" class="progress" style="display:none"><div class="bar"></div></div>
+
+
+      <div class="predict-actions">
+        <button id="btn" class="btn" type="submit">
+          <span class="btn-inner"><span class="btn-spinner" aria-hidden></span><span>Predict</span></span>
+        </button>
+      </div>
+
+
+      <p class="error" id="err" role="alert"></p>
+
+
+      <div class="result" id="res" style="display:grid; gap:10px"></div>
+    </form>
+    </div>
+  </div>
+
     <script>
       const home = document.getElementById('home');
       const away = document.getElementById('away');
       const sh = document.getElementById('sugg-home');
       const sa = document.getElementById('sugg-away');
-      const date = document.getElementById('date');
+      const form = document.getElementById('formPredict');
       const btn = document.getElementById('btn');
+      const swapBtn = document.getElementById('swapBtn');
+      const clearHome = document.getElementById('clearHome');
+      const clearAway = document.getElementById('clearAway');
       const err = document.getElementById('err');
       const res = document.getElementById('res');
+      const loading = document.getElementById('loading');
 
       async function predict() {
         err.textContent = '';
         res.innerHTML = '';
         const h = (home.value || '').trim();
         const a = (away.value || '').trim();
-        const d = (date.value || '').trim();
         if (!h || !a) { err.textContent = 'Please enter both teams.'; return; }
-        btn.disabled = true;
+        btn.disabled = true; btn.classList.add('loading');
+        if (loading) loading.style.display = 'block';
         try {
           const qs = new URLSearchParams({ home: h, away: a });
-          if (d) qs.set('date', d);
           const r = await fetch('/predict?' + qs.toString(), { headers: { 'accept': 'application/json' } });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const data = await r.json();
           if (data.error) { err.textContent = data.error; return; }
-          const w = document.createElement('div');
-          w.className = 'winner';
           const homeName = data.home || 'Home';
           const awayName = data.away || 'Away';
           const pH = Math.round((data.p_home_win ?? 0) * 1000) / 10;
           const pA = Math.round((data.p_away_win ?? 0) * 1000) / 10;
-          w.textContent = (data.winner === 'home' ? 'Winner: ' + homeName : 'Winner: ' + awayName);
-          const p = document.createElement('div');
-          p.className = 'prob';
-          p.textContent = `${homeName} ${pH}%  •  ${awayName} ${pA}%`;
-          const meta = document.createElement('div');
-          meta.className = 'meta';
-          const feature = data.feature || 'expected_diff';
-          const years = (data.years ?? data.train_years ?? 'n/a');
-          const cutoff = data.cutoff || 'auto';
-          meta.textContent = `feature=${feature} • train_years=${years} • cutoff=${cutoff}`;
-          res.appendChild(w);
-          res.appendChild(p);
-          res.appendChild(meta);
+          const card = document.createElement('div'); card.className = 'card result-card'; card.style.display='grid'; card.style.gap='10px';
+          const win = document.createElement('div'); win.className='winner-line'; win.textContent = (data.winner === 'home' ? `Winner: ${homeName}` : `Winner: ${awayName}`);
+          const meters = document.createElement('div'); meters.className='meter-group';
+          const mkMeter = (label, pct) => {
+            const row = document.createElement('div'); row.className='meter';
+            const lab = document.createElement('div'); lab.className='meter-label'; lab.textContent = label;
+            const bar = document.createElement('div'); bar.className='bar';
+            const fill = document.createElement('span'); fill.className='fill'; fill.style.width = (Math.max(0, Math.min(100, pct))).toFixed(1) + '%';
+            bar.appendChild(fill);
+            const pctEl = document.createElement('div'); pctEl.className='pct'; pctEl.textContent = pct.toFixed(1) + '%';
+            row.appendChild(lab); row.appendChild(bar); row.appendChild(pctEl);
+            return row;
+          };
+          meters.appendChild(mkMeter(homeName, pH));
+          meters.appendChild(mkMeter(awayName, pA));
+          card.appendChild(win);
+          card.appendChild(meters);
+          res.appendChild(card);
         } catch (e) {
           err.textContent = (e && e.message) ? e.message : String(e);
         } finally {
-          btn.disabled = false;
+          btn.disabled = false; btn.classList.remove('loading');
+          if (loading) loading.style.display = 'none';
         }
       }
 
-      btn.addEventListener('click', predict);
-      home.focus();
-
-      // --- Suggest for teams using /search (filter to teams) ---
+      // Suggest support
       function renderSuggest(container, input, items) {
         if (!items || items.length === 0) { container.style.display='none'; container.innerHTML=''; return; }
         container.innerHTML = '';
-        items.slice(0, 10).forEach((it, idx) => {
+        const uniq = [];
+        const seen = new Set();
+        (items || []).forEach(it => {
+          const key = String(it._id || it.id || it.team_id || it._title || '');
+          if (!key || seen.has(key)) return; seen.add(key); uniq.push(it);
+        });
+        uniq.slice(0, 10).forEach((it, idx) => {
           const div = document.createElement('div');
           div.className = 's-item' + (idx === 0 ? ' active' : '');
           const badge = document.createElement('div'); badge.className='s-entity'; badge.textContent='team';
@@ -146,7 +159,6 @@
         });
         container.style.display='block';
       }
-
       async function fetchTeamSuggest(text) {
         const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=team&limit=15`, { headers: { 'accept':'application/json' } });
         if (!res.ok) return [];
@@ -154,7 +166,6 @@
         const items = (data.items || []).filter(it => (it._entity||'') === 'team');
         return items;
       }
-
       function wireSuggest(input, container) {
         let timer = null;
         input.addEventListener('input', () => {
@@ -162,10 +173,7 @@
           if (timer) clearTimeout(timer);
           if (!text) { container.style.display='none'; return; }
           timer = setTimeout(async () => {
-            try {
-              const items = await fetchTeamSuggest(text);
-              renderSuggest(container, input, items);
-            } catch {}
+            try { const items = await fetchTeamSuggest(text); renderSuggest(container, input, items); } catch {}
           }, 160);
         });
         input.addEventListener('keydown', (ev) => {
@@ -180,8 +188,7 @@
             items.forEach(n => n.classList.remove('active')); items[ni].classList.add('active');
             items[ni].scrollIntoView({ block:'nearest' });
           } else if (ev.key === 'Enter') {
-            const active = items[idx >= 0 ? idx : 0];
-            if (active) active.dispatchEvent(new MouseEvent('mousedown'));
+            const active = items[idx >= 0 ? idx : 0]; if (active) active.dispatchEvent(new MouseEvent('mousedown'));
           } else if (ev.key === 'Escape') {
             container.style.display='none';
           }
@@ -189,20 +196,29 @@
         input.addEventListener('blur', () => setTimeout(() => container.style.display='none', 150));
       }
 
+      // Events
+      form.addEventListener('submit', (ev) => { ev.preventDefault(); predict(); });
+      btn.addEventListener('click', (ev) => { ev.preventDefault(); predict(); });
+      if (swapBtn) swapBtn.addEventListener('click', () => { const t = home.value; home.value = away.value; away.value = t; });
+      if (clearHome) clearHome.addEventListener('click', () => { home.value=''; err.textContent=''; res.innerHTML=''; });
+      if (clearAway) clearAway.addEventListener('click', () => { away.value=''; err.textContent=''; res.innerHTML=''; });
+
+      // Wire suggests
       wireSuggest(home, sh);
       wireSuggest(away, sa);
 
-      // Pre-fill from query params and auto-run
+      // Pre-fill and autorun
       try {
         const u = new URL(location.href);
         const hp = (u.searchParams.get('home') || '').trim();
         const ap = (u.searchParams.get('away') || '').trim();
-        const dp = (u.searchParams.get('date') || '').trim();
         if (hp) home.value = hp;
         if (ap) away.value = ap;
-        if (dp) date.valueAsDate = new Date(dp);
         if (hp && ap) predict();
       } catch {}
     </script>
   </body>
   </html>
+
+
+
