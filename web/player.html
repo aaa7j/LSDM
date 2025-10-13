@@ -31,10 +31,11 @@
           if (!res.ok) throw new Error('HTTP '+res.status);
           const d = await res.json();
           if (d.error) { el.textContent = d.error; return; }
+
           const box = document.createElement('div');
-          box.style.display = 'grid'; box.style.gap = '6px';
+          box.style.display = 'grid'; box.style.gap = '8px';
           const title = document.createElement('div'); title.className = 'title'; title.textContent = d.name || d.id;
-          const sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = `${d.position||''} ${d.nationality? '· '+d.nationality:''}`.trim();
+          const sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = `${d.position||''} ${d.nationality ? '· ' + d.nationality : ''}`.trim();
           box.appendChild(title); if (sub.textContent) box.appendChild(sub);
           const extra = document.createElement('div'); extra.className='extra';
           extra.textContent = `Height: ${d.height||'-'}  |  Weight: ${d.weight||'-'}  |  College: ${d.college||'-'}  |  Exp: ${d.experience||'-'}`;
@@ -43,6 +44,58 @@
             const link = document.createElement('a'); link.href = `/team/${encodeURIComponent(d.team.id)}`; link.textContent = `Team: ${d.team.name || d.team.id}${d.team.city? ' ('+d.team.city+')':''}`; link.style.color='var(--accent)'; link.style.textDecoration='none';
             box.appendChild(link);
           }
+
+          // Quick summary (position, GP, shooting splits, PTS/PPG, draft)
+          try {
+            const sr = await fetch(`/player/summary/${encodeURIComponent(id)}`, { headers: { 'accept':'application/json' } });
+            if (sr.ok) {
+              const s = await sr.json(); if (!s.error) {
+                const ms = document.createElement('div'); ms.className = 'mini-stats';
+                const left = []; if (s.position) left.push(String(s.position)); if (typeof s.games_played === 'number') left.push('GP ' + s.games_played);
+                const mid = []; if (typeof s.made_threes === 'number') mid.push(s.made_threes + ' 3PM'); if (typeof s.made_twos === 'number') mid.push(s.made_twos + ' 2PM'); if (typeof s.made_fts === 'number') mid.push(s.made_fts + ' FTM');
+                const right = []; if (typeof s.total_points === 'number') right.push('PTS ' + s.total_points); if (typeof s.avg_points === 'number') right.push('PPG ' + s.avg_points);
+                const draft = (s.draft_year ? ('Draft ' + s.draft_year) : '') + (s.overall_pick ? (' · #' + s.overall_pick) : '');
+                ms.textContent = [left.join(' · '), mid.join(' · '), right.join(' · '), draft].filter(Boolean).join('  |  ');
+                box.appendChild(ms);
+              }
+            }
+          } catch {}
+
+          // Career line (GP, PPG, APG, RPG) — always try to show
+          try {
+            const cr = await fetch(`/player/career/${encodeURIComponent(id)}`, { headers: { 'accept':'application/json' } });
+            if (cr.ok) {
+              const c = await cr.json();
+              const line = document.createElement('div'); line.className='mini-stats';
+              const gp = (c && c.gp != null) ? c.gp : '-';
+              const ppg = (c && c.ppg != null) ? c.ppg : '-';
+              const apg = (c && c.apg != null) ? c.apg : '-';
+              const rpg = (c && c.rpg != null) ? c.rpg : '-';
+              line.textContent = `Career · GP ${gp} · PPG ${ppg} · APG ${apg} · RPG ${rpg}`;
+              box.appendChild(line);
+            }
+          } catch {}
+
+          // Per-season scoring summary (if available)
+          try {
+            const rr = await fetch(`/player/scoring-by-season/${encodeURIComponent(id)}`, { headers: { 'accept':'application/json' } });
+            if (rr.ok) {
+              const data = await rr.json(); const items = data.items || [];
+              if (items.length) {
+                const section = document.createElement('div'); section.className = 'section';
+                const tt = document.createElement('div'); tt.className = 'title'; tt.textContent = 'Scoring by season'; section.appendChild(tt);
+                const grid = document.createElement('div'); grid.className = 'player-stats';
+                const head = ['Season','GP','PTS','PPG','3PM','2PM','FTM'];
+                head.forEach(h => { const c=document.createElement('div'); c.className='head'; c.textContent=h; grid.appendChild(c); });
+                items.forEach(r => {
+                  const row = [String(r.season||'-'), String(r.games||'-'), String(r.pts||'-'), String(r.ppg||'-'), String(r.threes||'-'), String(r.twos||'-'), String(r.fts||'-')];
+                  row.forEach(v => { const c=document.createElement('div'); c.className='cell'; c.textContent=v; grid.appendChild(c); });
+                });
+                section.appendChild(grid); box.appendChild(section);
+              }
+            }
+          } catch {}
+
           el.innerHTML=''; el.appendChild(box);
         } catch (e) {
           el.textContent = 'Error: '+(e.message||e);
@@ -51,5 +104,5 @@
       load();
     </script>
   </body>
-</html>
+ </html>
 

@@ -111,9 +111,6 @@
             <div class="conf" id="std-west"><div class="title">West</div>
             <div class="head"><div class="col-name">Team</div><div class="col-wl">W-L</div><div class="col-gb">GB</div><div class="col-streak">Streak</div></div></div>
           </div>
-          <div style="margin-top:12px; display:flex; gap:10px;">
-            <a class="btn secondary" href="/?q=2024-06-19">Explore a game date</a>
-          </div>
         </div>
       </div>
 
@@ -206,10 +203,23 @@
           if (sub.textContent) box.appendChild(sub);
           if (extra.textContent) box.appendChild(extra);
           div.appendChild(badge);
-          div.appendChild(box);
-          div.style.cursor = 'pointer';
-          div.addEventListener('click', () => openEntity(it));
-          results.appendChild(div);
+          
+          if ((it._entity||'') === 'player' && it._id) {
+            try {
+              fetch(`/player/summary/${encodeURIComponent(it._id)}`, { headers: { 'accept':'application/json' } })
+                .then(r => r.ok ? r.json() : null)
+                .then(d => {
+                  if (!d || d.error) return;
+                  const ms = document.createElement('div'); ms.className = 'mini-stats';
+                  const left = []; if (d.position) left.push(String(d.position)); if (typeof d.games_played === 'number') left.push('GP ' + d.games_played);
+                  const right = []; if (typeof d.total_points === 'number') right.push('PTS ' + d.total_points); if (typeof d.avg_points === 'number') right.push('PPG ' + d.avg_points);
+                  const mid = []; if (typeof d.made_threes === 'number') mid.push(d.made_threes + ' 3PM'); if (typeof d.made_twos === 'number') mid.push(d.made_twos + ' 2PM'); if (typeof d.made_fts === 'number') mid.push(d.made_fts + ' FTM');
+                  const draft = (d.draft_year ? ('Draft ' + d.draft_year) : '') + (d.overall_pick ? (' \\u00B7 #' + d.overall_pick) : '');
+                  ms.textContent = [left.join(' \\u00B7 '), mid.join(' \\u00B7 '), right.join(' \\u00B7 '), draft].filter(Boolean).join('  |  ');
+                  box.appendChild(ms);
+                });
+            } catch {} 
+          }
         }
       }
 
@@ -463,6 +473,11 @@
     </script>
   </body>
 </html>
+
+
+
+
+
 
 
 

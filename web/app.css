@@ -128,20 +128,21 @@ body {
 .list a { color: var(--accent); text-decoration: none; }
 .list a:hover { text-decoration: underline; }
 
-.standings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
+.standings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 14px; }
 .standings .conf { background: #0e1722; border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
 .standings .conf .title {
-  font-size: 13px; color: var(--muted); margin-bottom: 6px;
+  font-size: 14px; color: var(--muted); margin-bottom: 6px;
   display: flex; align-items: center; justify-content: space-between;
 }
 .standings .head, .standings .team {
   display: grid; grid-template-columns: 1fr 70px 48px 64px; gap: 8px; align-items: center;
 }
 .standings .head {
-  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px;
-  border-bottom: 1px dashed #1c2a3c; padding-bottom: 4px; margin-bottom: 4px;
+  font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px;
+  border-bottom: 1px dashed #1c2a3c; padding-bottom: 6px; margin-bottom: 6px;
 }
-.standings .team { padding: 4px 0; border-bottom: 1px dashed #1c2a3c; }
+.standings .team { padding: 6px 0; border-bottom: 1px dashed #1c2a3c; }
+.standings .head, .standings .team { line-height: 1.45; }
 .standings .team:last-child { border-bottom: 0; }
 .standings .col-name a { color: var(--fg); text-decoration: none; }
 .standings .col-name a:hover { text-decoration: underline; }
@@ -362,6 +363,18 @@ mark { color: inherit; background: linear-gradient(90deg, rgba(62,166,255,.2), r
 #btn:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(62,166,255,.4); }
 #btn:active { transform: translateY(0); filter: brightness(0.98); box-shadow: 0 6px 16px rgba(62,166,255,.32); }
 
+/* Mini stats inside result cards (players) */
+.mini-stats {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* Player page grid table */
+.player-stats { display: grid; grid-template-columns: 1fr 60px 70px 60px 60px 60px 60px; gap: 6px; font-size: 13px; margin-top: 6px; }
+.player-stats .head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
+.player-stats .cell { }
+
 /* Prediction results container: wider and slightly lower */
 .result { width: 100%; max-width: 920px; margin-top: 12px; }
 
@@ -372,3 +385,6 @@ mark { color: inherit; background: linear-gradient(90deg, rgba(62,166,255,.2), r
 h1.fade-in{
   padding-right: 10px;
 }
+.player-summary { display: grid; grid-template-columns: 100px repeat(6, 80px); gap: 8px; align-items: center; margin-top: 8px; }
+.player-summary .head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
+.player-summary .row-label { font-weight: 800; }

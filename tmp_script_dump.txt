@@ -1,0 +1,487 @@
+001: <!doctype html>
+002: <html lang="en">
+003:   <head>
+004:     <meta charset="utf-8" />
+005:     <meta name="viewport" content="width=device-width, initial-scale=1" />
+006:     <title>NBA Search</title>
+007:     <link rel="stylesheet" href="/static/app.css" />
+008:   </head>
+009:   <body>
+010:     <div class="topbar">
+011:       <div class="inner">
+012:         <a class="brand" href="/" onclick="if (location.protocol==='file:'){location.href='index.html'; return false;}">NBA Search</a>
+013:         <div class="nav">
+014:           <a href="/">Search</a>
+015:           <a href="/predict-ui">Predict</a>
+016:         </div>
+017:       </div>
+018:     </div>
+019:     <div class="wrap">
+020:       <h1 class="fade-in">Search (players / teams / games)</h1>
+021:       <form id="f" class="search-box" autocomplete="off">
+022:         <input id="q" class="input" type="text" placeholder="e.g. Michael Jordan, Lakers 2010, 2016-06-19" autocomplete="off" aria-autocomplete="list" />
+023:         <button id="btn" class="btn" type="submit">Search</button>
+024:         <div id="sugg" class="suggest" style="display:none"></div>
+025:       </form>
+026:       <div class="meta" id="meta"></div>
+027:       <div class="error" id="err"></div>
+028: 
+029:       <!-- Home sections (hidden when searching) -->
+030:       <div id="home" class="home">
+031:         <div class="section">
+032:           <div class="title">Most Popular Players</div>
+033:           <div class="chips" id="chips-players">
+034:             <div class="chip">LeBron James</div>
+035:             <div class="chip">Stephen Curry</div>
+036:             <div class="chip">Kevin Durant</div>
+037:             <div class="chip">Nikola Jokic</div>
+038:             <div class="chip">Luka Doncic</div>
+039:             <div class="chip">Victor Wembanyama</div>
+040:             <div class="chip">Giannis Antetokounmpo</div>
+041:             <div class="chip">Jayson Tatum</div>
+042:             <div class="chip">Kobe Bryant</div>
+043:             <div class="chip">Dirk Nowitzki</div>
+044:             <div class="chip">Allen Iverson</div>
+045:           </div>
+046:           <div class="list" style="margin-top:12px">
+047:             <div class="title">Head-to-Head Builder</div>
+048:             <div class="row" style="display:grid; grid-template-columns: 1fr 40px 1fr auto; gap:8px; column-gap:8px; align-items:end; justify-content:center;">
+049:               <div class="rel">
+050:                 <label class="sub" for="h2h-home" style="display:block;margin:0 0 4px;">Home team <span class="badge-mini" aria-hidden>H</span></label>
+051:                 <input id="h2h-home" class="input" type="text" placeholder="e.g. Lakers" autocomplete="off" aria-autocomplete="list" />
+052:                 <div id="sugg-h2h-home" class="suggest" style="display:none"></div>
+053:               </div>
+054:               <div class="swap-col">
+055:                 <button type="button" class="icon-btn swap-btn" id="swapH2HBtn" title="Swap home/away" aria-label="Swap home and away"></button>
+056:               </div>
+057:               <div class="rel">
+058:                 <label class="sub" for="h2h-away" style="display:block;margin:0 0 4px;">Away team <span class="badge-mini" aria-hidden>A</span></label>
+059:                 <input id="h2h-away" class="input" type="text" placeholder="e.g. Celtics" autocomplete="off" aria-autocomplete="list" />
+060:                 <div id="sugg-h2h-away" class="suggest" style="display:none"></div>
+061:               </div>
+062:               <button id="btnH2H" class="btn">Go</button>
+063:             </div>
+064:           </div>
+065:           <div class="list" id="quick-links" style="margin-top:12px">
+066:             <div class="title">Teams</div>
+067:             <div class="chips">
+068:               <a class="chip" href="/?q=Los%20Angeles%20Lakers" data-team="Los Angeles Lakers">Lakers</a>
+069:               <a class="chip" href="/?q=Boston%20Celtics" data-team="Boston Celtics">Celtics</a>
+070:               <a class="chip" href="/?q=Golden%20State%20Warriors" data-team="Golden State Warriors">Warriors</a>
+071:               <a class="chip" href="/?q=Phoenix%20Suns" data-team="Phoenix Suns">Suns</a>
+072:               <a class="chip" href="/?q=Milwaukee%20Bucks" data-team="Milwaukee Bucks">Bucks</a>
+073:               <a class="chip" href="/?q=Philadelphia%2076ers" data-team="Philadelphia 76ers">76ers</a>
+074:               <a class="chip" href="/?q=New%20York%20Knicks" data-team="New York Knicks">Knicks</a>
+075:               <a class="chip" href="/?q=Miami%20Heat" data-team="Miami Heat">Heat</a>
+076:               <a class="chip" href="/?q=Dallas%20Mavericks" data-team="Dallas Mavericks">Mavericks</a>
+077:               <a class="chip" href="/?q=Denver%20Nuggets" data-team="Denver Nuggets">Nuggets</a>
+078:               <a class="chip" href="/?q=Los%20Angeles%20Clippers" data-team="Los Angeles Clippers">Clippers</a>
+079:               <a class="chip" href="/?q=Chicago%20Bulls" data-team="Chicago Bulls">Bulls</a>
+080:             </div>
+081:           </div>
+082:           <div class="list" id="predict-inline" style="margin-top:12px">
+083:             <div class="title">Prediction</div>
+084:             <div class="inline-predict">
+085:               <div class="inline-predict-row">
+086:                 <div class="rel">
+087:                   <label class="sub" for="pred-home" style="display:block;margin:0 0 4px;">Home team <span class="badge-mini" aria-hidden>H</span></label>
+088:                   <input id="pred-home" class="input" type="text" placeholder="e.g. Lakers" autocomplete="off" aria-autocomplete="list" />
+089:                   <div id="sugg-pred-home" class="suggest" style="display:none"></div>
+090:                 </div>
+091:                 <div class="swap-col">
+092:                   <button type="button" class="icon-btn swap-btn" id="swapPredBtn" title="Swap home/away" aria-label="Swap home and away"></button>
+093:                 </div>
+094:                 <div class="rel">
+095:                   <label class="sub" for="pred-away" style="display:block;margin:0 0 4px;">Away team <span class="badge-mini" aria-hidden>A</span></label>
+096:                   <input id="pred-away" class="input" type="text" placeholder="e.g. Celtics" autocomplete="off" aria-autocomplete="list" />
+097:                   <div id="sugg-pred-away" class="suggest" style="display:none"></div>
+098:                 </div>
+099:               </div>
+100:             </div>
+101:             <div class="inline-predict-actions">
+102:               <button id="btnPred" class="btn">Start Prediction</button>
+103:             </div>
+104:           </div>
+105:         </div>
+106:         <div class="section">
+107:           <div class="title">NBA Standings</div>
+108:           <div class="standings" id="standings">
+109:             <div class="conf" id="std-east"><div class="title">East</div>
+110:             <div class="head"><div class="col-name">Team</div><div class="col-wl">W-L</div><div class="col-gb">GB</div><div class="col-streak">Streak</div></div></div>
+111:             <div class="conf" id="std-west"><div class="title">West</div>
+112:             <div class="head"><div class="col-name">Team</div><div class="col-wl">W-L</div><div class="col-gb">GB</div><div class="col-streak">Streak</div></div></div>
+113:           </div>
+114:         </div>
+115:       </div>
+116: 
+117:       <div class="results" id="results"></div>
+118:       <div id="detail" class="card" style="display:none; position: fixed; right: 20px; bottom: 20px; max-width: 420px; z-index: 10;"></div>
+119:       <footer style="margin: 28px 0; color: var(--muted); font-size: 12px;">
+120:         Minimal UI. Results powered by the local FastAPI service.
+121:       </footer>
+122:     </div>
+123:     <script src="/static/app.js"></script>
+124:     <script>
+125:       const f = document.getElementById('f');
+126:       const q = document.getElementById('q');
+127:       const btn = document.getElementById('btn');
+128:       const meta = document.getElementById('meta');
+129:       const err = document.getElementById('err');
+130:       const results = document.getElementById('results');
+131:       const sugg = document.getElementById('sugg');
+132:       const home = document.getElementById('home');
+133:       let lastGoodQuery = '';
+134:       let lastGoodItems = [];
+135:       let activeSuggestReq = 0;
+136:       function alignSearchBoxToHome() {
+137:         try {
+138:           const wrap = document.querySelector('.wrap');
+139:           const homeEl = document.getElementById('home');
+140:           const sb = document.querySelector('.search-box');
+141:           if (!wrap || !homeEl || !sb) return;
+142:           // Only adjust when home is visible
+143:           const computed = window.getComputedStyle(homeEl);
+144:           if (computed.display === 'none') { sb.style.marginLeft = '0px'; sb.style.marginRight = '0px'; return; }
+145:           const wrect = wrap.getBoundingClientRect();
+146:           const hrect = homeEl.getBoundingClientRect();
+147:           const ml = Math.max(0, Math.round(hrect.left - wrect.left));
+148:           const mr = Math.max(0, Math.round(wrect.right - hrect.right));
+149:           sb.style.marginLeft = ml + 'px';
+150:           sb.style.marginRight = mr + 'px';
+151:         } catch {}
+152:       }
+153:       function openEntity(it) {
+154:         if (!it || !it._entity || !it._id) return;
+155:         let path = '/';
+156:         if (it._entity === 'player') path = `/player/${encodeURIComponent(it._id)}`;
+157:         else if (it._entity === 'team') path = `/team/${encodeURIComponent(it._id)}`;
+158:         else if (it._entity === 'game') path = `/game/${encodeURIComponent(it._id)}`;
+159:         else if (it._entity === 'matchup') {
+160:           const parts = String(it._id).split('-');
+161:           if (parts.length === 2) path = `/matchup/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`;
+162:         }
+163:         window.location.href = path;
+164:       }
+165:       // Swap buttons for H2H and Prediction
+166:       (function(){
+167:         const s1 = document.getElementById('swapH2HBtn');
+168:         if (s1) s1.addEventListener('click', () => {
+169:           const a = document.getElementById('h2h-home');
+170:           const b = document.getElementById('h2h-away');
+171:           const t = a.value; a.value = b.value; b.value = t;
+172:         });
+173:         const s2 = document.getElementById('swapPredBtn');
+174:         if (s2) s2.addEventListener('click', () => {
+175:           const a = document.getElementById('pred-home');
+176:           const b = document.getElementById('pred-away');
+177:           const t = a.value; a.value = b.value; b.value = t;
+178:         });
+179:       })();
+180:       function renderItems(items) {
+181:         results.innerHTML = '';
+182:         if (!items || items.length === 0) {
+183:           results.innerHTML = '<div class="sub">No results.</div>';
+184:           return;
+185:         }
+186:         for (const it of items) {
+187:           const div = document.createElement('div');
+188:           div.className = 'card slide-up';
+189:           const badge = document.createElement('span');
+190:           badge.className = 'badge';
+191:           badge.textContent = it._entity || '-';
+192:           const box = document.createElement('div');
+193:           const title = document.createElement('div');
+194:           title.className = 'title';
+195:           title.innerHTML = highlight(it._title || it._id, q.value);
+196:           const sub = document.createElement('div');
+197:           sub.className = 'sub';
+198:           sub.innerHTML = highlight(it._subtitle || '', q.value);
+199:           const extra = document.createElement('div');
+200:           extra.className = 'extra';
+201:           extra.textContent = it._extra || '';
+202:           box.appendChild(title);
+203:           if (sub.textContent) box.appendChild(sub);
+204:           if (extra.textContent) box.appendChild(extra);
+205:           div.appendChild(badge);
+206:           
+207:           if ((it._entity||'') === 'player' && it._id) {
+208:             try {
+209:               fetch(/player/summary/, { headers: { 'accept':'application/json' } })
+210:                 .then(r => r.ok ? r.json() : null)
+211:                 .then(d => {
+212:                   if (!d || d.error) return;
+213:                   const ms = document.createElement('div'); ms.className = 'mini-stats';
+214:                   const left = []; if (d.position) left.push(String(d.position)); if (typeof d.games_played === 'number') left.push(GP );
+215:                   const right = []; if (typeof d.total_points === 'number') right.push(PTS ); if (typeof d.avg_points === 'number') right.push(PPG );
+216:                   const mid = []; if (typeof d.made_threes === 'number') mid.push(${d.made_threes} 3PM); if (typeof d.made_twos === 'number') mid.push(${d.made_twos} 2PM); if (typeof d.made_fts === 'number') mid.push(${d.made_fts} FTM);
+217:                   const draft = (d.draft_year ? Draft  : '') + (d.overall_pick ?  � # : '');
+218:                   ms.textContent = [left.join(' � '), mid.join(' � '), right.join(' � '), draft].filter(Boolean).join('  |  ');
+219:                   box.appendChild(ms);
+220:                 });
+221:             } catch {} 
+222:           }
+223:         }
+224:       }
+225: 
+226:       async function doSearch(text) {
+227:         home.style.display = 'none';
+228:         err.textContent = '';
+229:         setLoading(meta, true);
+230:         results.innerHTML = Array.from({length: 5}).map(()=>'<div class="card"><div class="skeleton" style="width:76px;height:22px;border-radius:6px"></div><div style="flex:1"><div class="skeleton" style="height:14px;margin-bottom:8px"></div><div class="skeleton" style="height:12px;width:60%"></div></div></div>').join('');
+231:         btn.disabled = true;
+232:         try {
+233:           const url = `/search?q=${encodeURIComponent(text)}&limit=50`;
+234:           const res = await fetch(url, { headers: { 'accept': 'application/json' } });
+235:           if (!res.ok) throw new Error(`HTTP ${res.status}`);
+236:           const data = await res.json();
+237:           meta.textContent = `Query: ${data?.meta?.query || text} | Results: ${data?.total ?? data?.items?.length ?? 0}`;
+238:           renderItems(data.items || []);
+239:         } catch (e) {
+240:           console.error(e);
+241:           err.textContent = `Error: ${e.message || e}`;
+242:           meta.textContent = '';
+243:         } finally {
+244:           btn.disabled = false;
+245:           setLoading(meta, false);
+246:         }
+247:       }
+248: 
+249:       function renderSuggest(items) {
+250:         if (!items || items.length === 0) { sugg.style.display = 'none'; sugg.innerHTML = ''; return; }
+251:         sugg.innerHTML = '';
+252:         items.slice(0, 12).forEach((it, idx) => {
+253:           const div = document.createElement('div');
+254:           div.className = 's-item' + (idx === 0 ? ' active' : '');
+255:           div.dataset.idx = idx;
+256:           const badge = document.createElement('div');
+257:           badge.className = 's-entity'; badge.textContent = it._entity || '-';
+258:           const box = document.createElement('div');
+259:           const t = document.createElement('div'); t.className = 's-title'; t.innerHTML = highlight(it._title || it._id || '', q.value);
+260:           const s = document.createElement('div'); s.className = 's-sub'; s.innerHTML = highlight(it._subtitle || '', q.value);
+261:           box.appendChild(t); if (s.textContent) box.appendChild(s);
+262:           div.appendChild(badge); div.appendChild(box);
+263:           div.addEventListener('mousedown', (ev) => {
+264:             ev.preventDefault();
+265:             q.value = (it._title || it._id || '').toString();
+266:             sugg.style.display='none';
+267:             if (it && it._entity && it._id) {
+268:               openEntity(it);
+269:             } else {
+270:               doSearch(q.value);
+271:             }
+272:           });
+273:           sugg.appendChild(div);
+274:         });
+275:         sugg.style.display = 'block';
+276:       }
+277: 
+278:       // Instant suggest with small debounce + matchup preference
+279:       let suggestTimer = null;
+280:       q.addEventListener('input', () => {
+281:         const text = (q.value || '').trim();
+282:         if (!text) {
+283:           if (suggestTimer) clearTimeout(suggestTimer);
+284:           sugg.style.display = 'none';
+285:           sugg.innerHTML = '';
+286:           lastGoodQuery = '';
+287:           lastGoodItems = [];
+288:           return;
+289:         }
+290:         const myReq = ++activeSuggestReq;
+291:         const fetchAndRender = async () => {
+292:           try {
+293:             const looksMatchup = /\\\\s(?:vs\\\\.?|@|v)\\\\s/i.test(text);
+294:             const url = looksMatchup ? `/suggest-matchup?q=${encodeURIComponent(text)}&limit=15` : `/suggest?q=${encodeURIComponent(text)}&limit=15`;
+295:             const res = await fetch(url, { headers: { 'accept': 'application/json' } });
+296:             if (!res.ok) throw new Error('HTTP ' + res.status);
+297:             const data = await res.json();
+298:             if (myReq !== activeSuggestReq) return;
+299:             const items = (data.items || []).slice(0, 12);
+300:             if ((items.length === 0) && lastGoodItems.length) {
+301:               renderSuggest(lastGoodItems);
+302:             } else {
+303:               renderSuggest(items);
+304:               if (items.length) { lastGoodItems = items; lastGoodQuery = text; }
+305:             }
+306:           } catch {}
+307:         };
+308:         fetchAndRender();
+309:         if (suggestTimer) clearTimeout(suggestTimer);
+310:         suggestTimer = setTimeout(fetchAndRender, 120);
+311:       });
+312: 
+313:       // keyboard navigation for suggestions
+314:       function openPredictInline() {
+315:         const h = (document.getElementById('pred-home').value || '').trim();
+316:         const a = (document.getElementById('pred-away').value || '').trim();
+317:         if (!h || !a) return; // require both
+318:         location.href = `/predict-ui?home=${encodeURIComponent(h)}&away=${encodeURIComponent(a)}`;
+319:       }
+320:       // keyboard navigation for suggestions
+321:       q.addEventListener('keydown', (ev) => {
+322:         if (sugg.style.display === 'none') return;
+323:         const items = Array.from(sugg.querySelectorAll('.s-item'));
+324:         if (!items.length) return;
+325:         const idx = items.findIndex(n => n.classList.contains('active'));
+326:         if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+327:           ev.preventDefault();
+328:           let ni = idx + (ev.key === 'ArrowDown' ? 1 : -1);
+329:           if (ni < 0) ni = items.length-1; if (ni >= items.length) ni = 0;
+330:           items.forEach(n => n.classList.remove('active')); items[ni].classList.add('active');
+331:           items[ni].scrollIntoView({ block: 'nearest' });
+332:         } else if (ev.key === 'Enter') {
+333:           const active = items[idx >= 0 ? idx : 0];
+334:           if (active) { active.dispatchEvent(new MouseEvent('mousedown')); }
+335:         } else if (ev.key === 'Escape') {
+336:           sugg.style.display = 'none';
+337:         }
+338:       });
+339:       q.addEventListener('blur', () => { setTimeout(() => { sugg.style.display='none'; }, 150); });
+340: 
+341:       f.addEventListener('submit', (ev) => {
+342:         ev.preventDefault();
+343:         const text = (q.value || '').trim();
+344:         if (!text) return;
+345:         doSearch(text);
+346:       });
+347: 
+348:       // Direct navigation helpers
+349:       async function navigatePlayerByName(name) {
+350:         const text = (name || '').trim(); if (!text) return;
+351:         try {
+352:           const r = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=player&limit=3`, { headers: { 'accept': 'application/json' } });
+353:           if (r.ok) { const d = await r.json(); const it = (d.items || []).find(x => (x && x._entity === 'player' && x._id)); if (it) { window.location.href = `/player/${encodeURIComponent(it._id)}`; return; } }
+354:         } catch {}
+355:         q.value = text; doSearch(text);
+356:       }
+357:       async function navigateTeamByName(name) {
+358:         const text = (name || '').trim(); if (!text) return;
+359:         try {
+360:           const r = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=team&limit=3`, { headers: { 'accept': 'application/json' } });
+361:           if (r.ok) { const d = await r.json(); const it = (d.items || []).find(x => (x && x._entity === 'team' && x._id)); if (it) { window.location.href = `/team/${encodeURIComponent(it._id)}`; return; } }
+362:         } catch {}
+363:         q.value = text; doSearch(text);
+364:       }
+365: 
+366:       // H2H suggest helpers
+367:       async function fetchTeamSuggest(text) {
+368:         const res = await fetch(`/suggest?q=${encodeURIComponent(text)}&entity=team&limit=10`, { headers: { 'accept': 'application/json' } });
+369:         if (!res.ok) return [];
+370:         const data = await res.json();
+371:         const raw = (data.items || []).filter(it => (it._entity||'') === 'team');
+372:         const seen = new Set();
+373:         return raw.filter(it => { const k = `${it._entity}:${it._id}`; if (seen.has(k)) return false; seen.add(k); return true; });
+374:       }
+375:       function renderTeamSuggest(container, input, items) {
+376:         if (!items || items.length === 0) { container.style.display='none'; container.innerHTML=''; return; }
+377:         container.innerHTML = '';
+378:         items.slice(0, 10).forEach((it, idx) => {
+379:           const div = document.createElement('div'); div.className = 's-item' + (idx === 0 ? ' active' : '');
+380:           const badge = document.createElement('div'); badge.className='s-entity'; badge.textContent='team';
+381:           const box = document.createElement('div');
+382:           const t = document.createElement('div'); t.className='s-title'; t.textContent = it._title || '';
+383:           const s = document.createElement('div'); s.className='s-sub'; s.textContent = it._subtitle || '';
+384:           box.appendChild(t); if (s.textContent) box.appendChild(s);
+385:           div.appendChild(badge); div.appendChild(box);
+386:           div.addEventListener('mousedown', (ev) => { ev.preventDefault(); input.value = it._title || it._id || ''; container.style.display='none'; });
+387:           container.appendChild(div);
+388:         });
+389:         container.style.display='block';
+390:       }
+391:       function wireTeamSuggest(input, container) {
+392:         let timer = null;
+393:         input.addEventListener('input', () => {
+394:           const text = (input.value || '').trim();
+395:           if (timer) clearTimeout(timer);
+396:           if (!text) { container.style.display='none'; container.innerHTML=''; return; }
+397:           timer = setTimeout(async () => { try { const items = await fetchTeamSuggest(text); renderTeamSuggest(container, input, items); } catch {} }, 140);
+398:         });
+399:         input.addEventListener('keydown', (ev) => {
+400:           if (container.style.display === 'none') return;
+401:           const items = Array.from(container.querySelectorAll('.s-item')); if (!items.length) return;
+402:           const idx = items.findIndex(n => n.classList.contains('active'));
+403:           if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); let ni = idx + (ev.key === 'ArrowDown' ? 1 : -1); if (ni < 0) ni = items.length-1; if (ni >= items.length) ni = 0; items.forEach(n => n.classList.remove('active')); items[ni].classList.add('active'); items[ni].scrollIntoView({ block:'nearest' }); }
+404:           else if (ev.key === 'Enter') { const active = items[idx >= 0 ? idx : 0]; if (active) active.dispatchEvent(new MouseEvent('mousedown')); }
+405:           else if (ev.key === 'Escape') { container.style.display='none'; }
+406:         });
+407:         input.addEventListener('blur', () => setTimeout(() => container.style.display='none', 150));
+408:       }
+409:       async function resolveTeamId(name) {
+410:         const t = (name || '').trim(); if (!t) return null;
+411:         if (/^\d+$/.test(t)) return t;
+412:         try { const items = await fetchTeamSuggest(t); return items && items[0] && items[0]._id ? items[0]._id : null; } catch { return null; }
+413:       }
+414:   async function openH2H() {
+415:         const h = document.getElementById('h2h-home').value.trim();
+416:         const a = document.getElementById('h2h-away').value.trim();
+417:         if (!h || !a) return;
+418:         const [hid, aid] = await Promise.all([resolveTeamId(h), resolveTeamId(a)]);
+419:         if (hid && aid) { location.href = `/matchup/${encodeURIComponent(hid)}/${encodeURIComponent(aid)}`; }
+420:         else { q.value = `${h} vs ${a}`; doSearch(q.value); }
+421:   }
+422: 
+423:       // Load and render conference standings (full list)
+424:       async function loadStandings() {
+425:         try {
+426:           const r = await fetch('/standings', { headers: { 'accept': 'application/json' } });
+427:           if (!r.ok) return;
+428:           const d = await r.json();
+429:           const fill = (id, items) => {
+430:             const box = document.getElementById(id);
+431:             if (!box) return;
+432:             Array.from(box.querySelectorAll('.team')).forEach(n => n.remove());
+433:             (items || []).forEach(it => {
+434:               const row = document.createElement('div'); row.className = 'team';
+435:               const name = document.createElement('div'); name.className = 'col-name';
+436:               const a = document.createElement('a'); a.href = '/?q=' + encodeURIComponent(it.name || it.city || it.id); a.textContent = it.name || it.city || it.id; a.addEventListener('click', (ev) => { ev.preventDefault(); navigateTeamByName(it.name || it.city || String(it.id)); });
+437:               name.appendChild(a);
+438:               const wl = document.createElement('div'); wl.className = 'col-wl'; wl.textContent = `${it.w ?? '-'}-${it.l ?? '-'}`;
+439:               const gb = document.createElement('div'); gb.className = 'col-gb'; gb.textContent = (typeof it.gb === 'number') ? (Math.round(it.gb * 10) / 10).toFixed(1) : '-';
+440:               const st = document.createElement('div'); st.className = 'col-streak'; st.textContent = it.streak || '-';
+441:               row.appendChild(name); row.appendChild(wl); row.appendChild(gb); row.appendChild(st); box.appendChild(row);
+442:             });
+443:           };
+444:           fill('std-east', d.east);
+445:           fill('std-west', d.west);
+446:           alignSearchBoxToHome();
+447:         } catch {}
+448:       }
+449: 
+450:       // chips wiring
+451:       document.getElementById('chips-players').addEventListener('click', (e) => {
+452:         const chip = e.target.closest('.chip'); if (!chip) return; navigatePlayerByName(chip.textContent.trim());
+453:       });
+454:       // quick-links teams
+455:       document.querySelectorAll('#quick-links a[data-team]').forEach(a => {
+456:         a.addEventListener('click', (ev) => { ev.preventDefault(); navigateTeamByName(a.getAttribute('data-team') || a.textContent || ''); });
+457:       });
+458:       // wire h2h suggest + actions
+459:       wireTeamSuggest(document.getElementById('h2h-home'), document.getElementById('sugg-h2h-home'));
+460:       wireTeamSuggest(document.getElementById('h2h-away'), document.getElementById('sugg-h2h-away'));
+461:       document.getElementById('btnH2H').addEventListener('click', openH2H);
+462:       // H2H swap/clear
+463:       document.getElementById('pred-away').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openPredictInline(); }});
+464:       document.getElementById('h2h-home').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openH2H(); }});
+465:       document.getElementById('h2h-away').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openH2H(); }});
+466: 
+467:       // boot
+468:       const u = new URL(location.href);
+469:       const qp = (u.searchParams.get('q') || '').trim();
+470:       if (qp) { q.value = qp; doSearch(qp); }
+471:       else { home.style.display = 'grid'; q.focus(); loadStandings(); }
+472:       window.addEventListener('resize', () => alignSearchBoxToHome());
+473:     </script>
+474:   </body>
+475: </html>
+476: 
+477: 
+478: 
+479: 
+480: 
+481: 
+482: 
+483: 
+484: 
+485: 
+486: 
+
