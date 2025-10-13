@@ -45,7 +45,7 @@
           </div>
           <div class="list" style="margin-top:12px">
             <div class="title">Head-to-Head Builder</div>
-            <div class="row" style="display:grid; grid-template-columns: 1fr 40px 1fr auto; gap:8px; align-items:end;">
+            <div class="row" style="display:grid; grid-template-columns: 1fr 40px 1fr auto; gap:8px; column-gap:8px; align-items:end; justify-content:center;">
               <div class="rel">
                 <label class="sub" for="h2h-home" style="display:block;margin:0 0 4px;">Home team <span class="badge-mini" aria-hidden>H</span></label>
                 <input id="h2h-home" class="input" type="text" placeholder="e.g. Lakers" autocomplete="off" aria-autocomplete="list" />
@@ -136,7 +136,23 @@
       let lastGoodQuery = '';
       let lastGoodItems = [];
       let activeSuggestReq = 0;
-
+      function alignSearchBoxToHome() {
+        try {
+          const wrap = document.querySelector('.wrap');
+          const homeEl = document.getElementById('home');
+          const sb = document.querySelector('.search-box');
+          if (!wrap || !homeEl || !sb) return;
+          // Only adjust when home is visible
+          const computed = window.getComputedStyle(homeEl);
+          if (computed.display === 'none') { sb.style.marginLeft = '0px'; sb.style.marginRight = '0px'; return; }
+          const wrect = wrap.getBoundingClientRect();
+          const hrect = homeEl.getBoundingClientRect();
+          const ml = Math.max(0, Math.round(hrect.left - wrect.left));
+          const mr = Math.max(0, Math.round(wrect.right - hrect.right));
+          sb.style.marginLeft = ml + 'px';
+          sb.style.marginRight = mr + 'px';
+        } catch {}
+      }
       function openEntity(it) {
         if (!it || !it._entity || !it._id) return;
         let path = '/';
@@ -417,6 +433,7 @@
           };
           fill('std-east', d.east);
           fill('std-west', d.west);
+          alignSearchBoxToHome();
         } catch {}
       }
 
@@ -442,9 +459,11 @@
       const qp = (u.searchParams.get('q') || '').trim();
       if (qp) { q.value = qp; doSearch(qp); }
       else { home.style.display = 'grid'; q.focus(); loadStandings(); }
+      window.addEventListener('resize', () => alignSearchBoxToHome());
     </script>
   </body>
 </html>
+
 
 
 

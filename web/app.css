@@ -94,9 +94,19 @@ body {
 
 /* Containers */
 .rel { position: relative; }
-.wrap { max-width: 1280px; margin: 24px auto; padding: 0 16px; }
+.wrap {
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+}
 .page { flex: 1; }
-.home { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; margin-top: 18px; }
+.home {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 10px;
+  margin-top: 18px;
+  justify-content: center;
+}
 .home .section {
   background: linear-gradient(180deg, var(--card), #0d141d);
   border: 1px solid var(--border);
@@ -137,7 +147,17 @@ body {
 .standings .col-name a:hover { text-decoration: underline; }
 .standings .col-wl, .standings .col-gb, .standings .col-streak { text-align: right; font-variant-numeric: tabular-nums; }
 
-.search-box { position: relative; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.search-box { position: relative; 
+  display: grid; 
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: center; 
+  margin-left: 0;
+  margin-right: 0; }
+
+@media (max-width: 780px) {
+  .search-box { margin-left: 0; margin-right: 0; }
+}
 .search-box .input { width: 100%; font-size: 16px; padding: 12px 14px; }
 
 .card {
@@ -227,7 +247,21 @@ mark { color: inherit; background: linear-gradient(90deg, rgba(62,166,255,.2), r
  
 /* Home inline prediction */
 .inline-predict { display: flex; justify-content: center; }
-.inline-predict-row { display: grid; grid-template-columns: minmax(280px, 1fr) 40px minmax(280px, 1fr); gap: 12px; align-items: end; }
+.inline-predict-row { display: grid; grid-template-columns: minmax(280px, 1fr) 40px minmax(280px, 1fr); gap: 12px; align-items: end; justify-content: center; }
+/* Shift only the away field slightly right without widening layout */
+.inline-predict-row > .rel:last-child { margin-left: 30px; }
+.inline-predict-row > .rel:first-child { margin-left: 25px; }
+.home .row > .rel:nth-child(3) { margin-left: 18px; }
+.home .row > .rel:nth-child(1) { margin-left: 18px; }
+/* Head-to-Head: fine tune swap + Go button */
+.home .row .swap-col { margin-left: 6px; }
+.home .row #btnH2H { align-self: end; padding: 12px 18px; font-size: 16px; }
+@media (max-width: 780px) {
+  .inline-predict-row > .rel:last-child,
+  .inline-predict-row > .rel:first-child,
+  .home .row > .rel:nth-child(3),
+  .home .row > .rel:nth-child(1) { margin-left: 0; }
+}
 .inline-predict-row .swap-col { align-self: end; }
 .home .row .swap-col { align-self: end; }
 .inline-predict .input { padding: 12px 14px; font-size: 16px; }
@@ -331,5 +365,10 @@ mark { color: inherit; background: linear-gradient(90deg, rgba(62,166,255,.2), r
 /* Prediction results container: wider and slightly lower */
 .result { width: 100%; max-width: 920px; margin-top: 12px; }
 
+#f{
+  margin:0;
+}
 
-
+h1.fade-in{
+  padding-right: 10px;
+}
