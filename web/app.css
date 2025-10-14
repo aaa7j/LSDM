@@ -388,3 +388,32 @@ h1.fade-in{
 .player-summary { display: grid; grid-template-columns: 100px repeat(6, 80px); gap: 8px; align-items: center; margin-top: 8px; }
 .player-summary .head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
 .player-summary .row-label { font-weight: 800; }
+
+/* Player detail header */
+.player-card { padding: 0; }
+.player-page { display: grid; gap: 14px; padding: 12px; }
+.player-head { display: grid; grid-template-columns: 96px 1fr auto; gap: 12px; align-items: start; }
+.player-avatar { width: 96px; height: 96px; border-radius: 18px; display:flex; align-items:center; justify-content:center; font-size: 34px; font-weight: 900; color: #00111f; background: linear-gradient(135deg, #ffd84d, #ffb347); box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 6px 16px rgba(0,0,0,.35); }
+.player-bio { display: grid; gap: 4px; }
+.player-name { font-size: 30px; font-weight: 900; letter-spacing: .3px; }
+.player-full { color: var(--fg); font-weight: 700; }
+.player-facts, .player-born { color: var(--muted); }
+.player-team .link { color: var(--accent); text-decoration: none; }
+.player-team .link:hover { text-decoration: underline; }
+.player-right { display: flex; align-items: flex-start; }
+.award-chips { display: grid; gap: 8px; }
+.award { padding: 6px 10px; background: #7a4d11; color: #fff4da; border-radius: 10px; border: 1px solid rgba(0,0,0,.35); box-shadow: inset 0 1px 0 rgba(255,255,255,.25); font-size: 12px; white-space: nowrap; }
+
+/* Summary table similar to BR header */
+.summary-section { margin-top: 8px; }
+.summary-table { display: grid; grid-template-columns: 100px repeat(10, 70px); gap: 8px; align-items: center; font-variant-numeric: tabular-nums; }
+.summary-table .head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
+.summary-table .cell { text-align: right; }
+.summary-table .cell:first-child, .summary-table .head:first-child { text-align: left; }
+
+@media (max-width: 860px) {
+  .player-head { grid-template-columns: 72px 1fr; }
+  .player-right { grid-column: 1 / -1; }
+  .player-avatar { width: 72px; height: 72px; font-size: 28px; border-radius: 14px; }
+  .summary-table { grid-template-columns: 84px repeat(10, 60px); }
+}

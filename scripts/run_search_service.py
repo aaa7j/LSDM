@@ -75,6 +75,12 @@ def main():
     # Prepare Windows/Java/Spark env vars and point the service to the warehouse
     _ensure_windows_env(args.java_home)
     os.environ.setdefault("WAREHOUSE_DIR", args.warehouse)
+    # Ensure PySpark uses the same interpreter as the driver/venv
+    try:
+        os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+        os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+    except Exception:
+        pass
 
     # Import here so env vars are in place before FastAPI module init
     # Import the service that initializes Spark on startup

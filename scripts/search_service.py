@@ -109,7 +109,7 @@ def _quick_player_summary(spark: SparkSession, pid: int) -> dict:
     """
     try:
         pid_i = int(pid)
-        tables = {t.name for t in spark.catalog.listTables()}
+        tables = {t.name.upper() for t in spark.catalog.listTables()}
         has_pbp = "GLOBAL_PLAY_BY_PLAY" in tables
         pbp = spark.table("GLOBAL_PLAY_BY_PLAY") if has_pbp else None
         # Filter by player for efficiency
@@ -129,41 +129,109 @@ def _quick_player_summary(spark: SparkSession, pid: int) -> dict:
                            F.col("nationality"))
                    .limit(1))
 
-        # If no PBP data, return base only
-        if (pbp1 is None) or pbp1.rdd.isEmpty():
+        # If no PBP data, return base info with draft when available
+        if (pbp1 is None) or (pbp1.limit(1).count() == 0):
             row = base_df.limit(1).collect()
             out = {"_entity": "player", "id": str(pid_i)}
             if row:
                 r = row[0].asDict(recursive=True)
                 out.update({k: r.get(k) for k in ["name","position","team_id","experience","college","nationality"]})
+            try:
+                dh = (
+                    spark.table("GLOBAL_DRAFT_HISTORY")
+                         .where(F.col("player_id").cast("int") == F.lit(int(pid)))
+                         .orderBy(F.col("draft_year").asc(), F.col("overall_pick").asc())
+                         .limit(1).collect()
+                )
+                if dh:
+                    dr = dh[0].asDict(recursive=True)
+                    out.update({
+                        "draft_year": dr.get("draft_year"),
+                        "overall_pick": dr.get("overall_pick"),
+                    })
+            except Exception:
+                pass
             return out
 
-        # Derive points from score string deltas and aggregate
-        cleaned = (pbp1.filter(F.col("score").isNotNull())
-                   .withColumn("score_clean", F.regexp_replace("score", "\\s+", ""))
-                   .withColumn("score_arr", F.split("score_clean", "-"))
-                   .withColumn("score_home", F.when(F.size("score_arr") == 2, F.element_at("score_arr", 1).cast("int")))
-                   .withColumn("score_away", F.when(F.size("score_arr") == 2, F.element_at("score_arr", 2).cast("int")))
-                  )
-        from pyspark.sql import Window as _W
-        win = _W.partitionBy("game_id").orderBy("eventnum")
-        cleaned = (cleaned
-                   .withColumn("prev_home", F.coalesce(F.lag("score_home").over(win), F.lit(0)))
-                   .withColumn("prev_away", F.coalesce(F.lag("score_away").over(win), F.lit(0)))
-                   .withColumn("delta_home", F.when(F.col("score_home").isNotNull(), F.col("score_home") - F.col("prev_home")).otherwise(0))
-                   .withColumn("delta_away", F.when(F.col("score_away").isNotNull(), F.col("score_away") - F.col("prev_away")).otherwise(0))
-                   .withColumn("points", F.greatest(F.col("delta_home"), F.col("delta_away"))))
-        scoring = cleaned.where(F.col("points") > 0)
-        summary = (scoring.groupBy("player1_id")
-                    .agg(F.countDistinct("game_id").alias("games_played"),
-                         F.sum("points").alias("total_points"),
-                         F.sum(F.when(F.col("points") == 3, 1).otherwise(0)).alias("made_threes"),
-                         F.sum(F.when(F.col("points") == 2, 1).otherwise(0)).alias("made_twos"),
-                         F.sum(F.when(F.col("points") == 1, 1).otherwise(0)).alias("made_fts")))
+        # Robust counting using event types and text markers (no score delta needed)
+        cols = [
+            F.col("game_id").cast("int").alias("game_id"),
+            F.col("eventmsgtype").cast("int").alias("t"),
+            F.col("player1_id").cast("int").alias("p1"),
+            F.col("player2_id").cast("int").alias("p2"),
+            F.coalesce(F.col("homedescription"), F.col("visitordescription"), F.col("neutraldescription")).alias("desc"),
+            F.col("player1_name").alias("p1n"),
+            F.col("player2_name").alias("p2n"),
+        ]
+        ev = pbp.select(*cols)
+        # Try id-based first
+        ev_any = ev.where((F.col("p1") == pid_i) | (F.col("p2") == pid_i))
+        if ev_any.limit(1).count() == 0:
+            # Fallback by name
+            try:
+                nm = (spark.table("GLOBAL_PLAYER")
+                          .where(F.col("player_id").cast("int") == F.lit(pid_i))
+                          .select(F.col("full_name").alias("n")).limit(1).collect())
+                if nm:
+                    full_name = nm[0]["n"]
+                    ev_any = ev.where((F.lower(F.col("p1n")) == F.lit(str(full_name).lower())) | (F.lower(F.col("p2n")) == F.lit(str(full_name).lower())))
+            except Exception:
+                pass
+        ev_any = ev.where((F.col("p1") == pid_i) | (F.col("p2") == pid_i))
+        # if id-based match is empty, try name fallback (data inconsistencies)
+        if ev_any.limit(1).count() == 0:
+            try:
+                nm_row = base_df.limit(1).collect()
+                full_name = (nm_row[0]["name"] if nm_row else None) or None
+                if full_name:
+                    nm = F.lit(str(full_name).lower())
+                    ev_any = ev.where((F.lower(F.col("p1n")) == nm) | (F.lower(F.col("p2n")) == nm))
+                    if ev_any.limit(1).count() == 0:
+                        # also try last name only (some datasets shorten names)
+                        ln = str(full_name).split(" ")[-1].lower()
+                        ev_any = ev.where((F.lower(F.col("p1n")).endswith(F.lit(" "+ln))) | (F.lower(F.col("p2n")).endswith(F.lit(" "+ln))))
+            except Exception:
+                pass
+        shooter = ev.where(F.col("p1") == pid_i)
+        if shooter.limit(1).count() == 0:
+            # name-based shooter fallback as well
+            try:
+                nm_row = base_df.limit(1).collect()
+                full_name = (nm_row[0]["name"] if nm_row else None) or None
+                if full_name:
+                    shooter = ev.where(F.lower(F.col("p1n")) == F.lit(str(full_name).lower()))
+            except Exception:
+                pass
+        is_make = (F.col("t") == 1)
+        is_miss = (F.col("t") == 2)
+        is_ft = (F.col("t") == 3)
+        is_three = F.lower(F.col("desc")).contains(F.lit("3pt")) | F.lower(F.col("desc")).contains(F.lit("3-pt")) | F.lower(F.col("desc")).contains(F.lit("three"))
+        is_miss_text = F.lower(F.col("desc")).contains(F.lit("miss"))
 
-        joined = (base_df
-                  .join(summary, summary["player1_id"].cast("int") == base_df["player_id"], how="left")
-                  .withColumn("avg_points", F.round(F.col("total_points")/F.col("games_played"), 2)))
+        # Aggregations
+        if ev_any.limit(1).count() == 0:
+            games_played = 0
+            fgm_val = fg3m_val = ftm_val = 0
+        else:
+            games_played = int(ev_any.select("game_id").distinct().count())
+            agg = (shooter.agg(
+                F.sum(F.when(is_make, 1).otherwise(0)).alias("fgm"),
+                F.sum(F.when(is_three & is_make, 1).otherwise(0)).alias("fg3m"),
+                F.sum(F.when(is_ft & (~is_miss_text), 1).otherwise(0)).alias("ftm"),
+            ).collect())
+            if agg:
+                fgm_val = int(agg[0]["fgm"] or 0)
+                fg3m_val = int(agg[0]["fg3m"] or 0)
+                ftm_val = int(agg[0]["ftm"] or 0)
+            else:
+                fgm_val = fg3m_val = ftm_val = 0
+
+        made_threes = fg3m_val
+        made_twos = max(0, fgm_val - fg3m_val)
+        made_fts = ftm_val
+        total_points = 3 * made_threes + 2 * made_twos + made_fts
+
+        joined = base_df
         row = joined.limit(1).collect()
         out = {"_entity": "player", "id": str(pid_i)}
         if row:
@@ -175,12 +243,12 @@ def _quick_player_summary(spark: SparkSession, pid: int) -> dict:
                 "experience": r.get("experience"),
                 "college": r.get("college"),
                 "nationality": r.get("nationality"),
-                "games_played": int(r.get("games_played") or 0),
-                "total_points": int(r.get("total_points") or 0),
-                "avg_points": float(r.get("avg_points") or 0.0),
-                "made_threes": int(r.get("made_threes") or 0),
-                "made_twos": int(r.get("made_twos") or 0),
-                "made_fts": int(r.get("made_fts") or 0),
+                "games_played": int(games_played or 0),
+                "total_points": int(total_points or 0),
+                "avg_points": float(round((total_points / games_played), 2) if games_played else 0.0),
+                "made_threes": int(made_threes or 0),
+                "made_twos": int(made_twos or 0),
+                "made_fts": int(made_fts or 0),
             })
 
         # Draft info (first record by year)
@@ -296,12 +364,24 @@ WAREHOUSE_DIR = os.environ.get("WAREHOUSE_DIR", "warehouse")
 POPULARITY_DIR = os.environ.get("POPULARITY_DIR", os.path.join("metadata", "popularity"))
 
 GLOBAL_PARQUET = {
-    # Views needed for search and predictions
+    # Core views needed for search and predictions
     "GLOBAL_PLAYER": "global_player",
     "GLOBAL_TEAM": "global_team",
     "GLOBAL_GAME": "global_game",
     "GLOBAL_LINE_SCORE": "global_line_score",
     "GLOBAL_OTHER_STATS": "global_other_stats",
+    # Add missing but available datasets used by player endpoints
+    "GLOBAL_PLAY_BY_PLAY": "global_play_by_play",
+    "GLOBAL_DRAFT_HISTORY": "global_draft_history",
+    "GLOBAL_DRAFT_COMBINE": "global_draft_combine",
+    "GLOBAL_OFFICIAL": "global_official",
+    "GLOBAL_GAME_OFFICIAL": "global_game_official",
+    # New: pre-aggregated per-player per-season totals from PBP
+    "GLOBAL_PLAYER_SEASON_FROM_PBP": "global_player_season_from_pbp",
+    # New: player stats outputs from tools/build_player_stats.py
+    "GLOBAL_PLAYER_STATS": "global_player_stats",
+    "GLOBAL_PLAYER_CAREER": "global_player_career",
+    "GLOBAL_PLAYER_LAST_SEASON": "global_player_last_season",
 }
 
 def _mk_spark() -> SparkSession:
@@ -311,8 +391,10 @@ def _mk_spark() -> SparkSession:
         .master("local[*]")
         .config("spark.ui.enabled", "false")
         .config("spark.sql.shuffle.partitions", "8")
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
+        .config("spark.sql.execution.arrow.pyspark.enabled", "false")
         .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.python.worker.faulthandler.enabled", "true")
+        .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true")
     )
     # Respect SPARK_LOCAL_DIRS if provided (Windows temp location)
     local_dirs = os.environ.get("SPARK_LOCAL_DIRS")
@@ -341,7 +423,8 @@ def _register_views_from_warehouse(spark: SparkSession, base: str = WAREHOUSE_DI
             spark.catalog.cacheTable(view_name)
     # Build helper views to reconstruct game results from line scores if needed
     try:
-        if "GLOBAL_LINE_SCORE" in [t.name for t in spark.catalog.listTables()]:
+        tbls_up = {t.name.upper() for t in spark.catalog.listTables()}
+        if "GLOBAL_LINE_SCORE" in tbls_up:
             lp = (spark.table("GLOBAL_LINE_SCORE")
                   .groupBy("game_id", "team_id")
                   .agg(F.sum(F.col("points")).alias("pts")))
@@ -505,6 +588,104 @@ def _materialize_team_conference(spark: SparkSession, *, persist: bool | None = 
             print(f"[WARN] Persist TEAM_CONFERENCE failed: {e}")
     print("[OK] TEAM_CONFERENCE view ready.")
 
+
+# --- Build per-player per-season totals from PBP into warehouse (no UDF) ---
+def _build_player_season_from_pbp(spark: SparkSession, warehouse: str) -> str:
+    pbp_tbls = {t.name.upper() for t in spark.catalog.listTables()}
+    if ("GLOBAL_PLAY_BY_PLAY" not in pbp_tbls) or ("GLOBAL_GAME" not in pbp_tbls):
+        raise RuntimeError("GLOBAL_PLAY_BY_PLAY or GLOBAL_GAME not available")
+
+    g = spark.table("GLOBAL_GAME").select(
+        F.col("game_id").cast("int").alias("game_id"),
+        F.col("game_date").cast("date").alias("game_date"),
+    )
+    pbp = spark.table("GLOBAL_PLAY_BY_PLAY")
+    ev = pbp.select(
+        F.col("game_id").cast("int").alias("game_id"),
+        F.col("eventnum").cast("int").alias("eventnum"),
+        F.col("eventmsgtype").cast("int").alias("t"),
+        F.col("player1_id").cast("int").alias("p1"),
+        F.col("player2_id").cast("int").alias("p2"),
+        F.col("score").alias("score"),
+        F.coalesce(F.col("homedescription"), F.col("visitordescription"), F.col("neutraldescription")).alias("desc"),
+    )
+    # Games per season: union(p1,p2) distinct per (game_id, player_id)
+    gp_pairs = (
+        ev.where(F.col("p1").isNotNull()).select(F.col("game_id"), F.col("p1").alias("player_id"))
+        .unionByName(ev.where(F.col("p2").isNotNull()).select(F.col("game_id"), F.col("p2").alias("player_id")))
+        .dropna(subset=["player_id"]).dropDuplicates(["game_id", "player_id"]))
+    gp = (gp_pairs.join(g, "game_id", "left")
+                    .withColumn("season", F.year(F.col("game_date")))
+                    .groupBy("season", "player_id")
+                    .agg(F.countDistinct(F.col("game_id")).alias("g")))
+
+    # Shots/FT for shooter p1
+    is_make = (F.col("t") == 1)
+    is_miss = (F.col("t") == 2)
+    is_ft = (F.col("t") == 3)
+    is_three = (F.lower(F.col("desc")).contains(F.lit("3pt")) |
+                F.lower(F.col("desc")).contains(F.lit("3-pt")) |
+                F.lower(F.col("desc")).contains(F.lit("three")))
+    is_miss_text = F.lower(F.col("desc")).contains(F.lit("miss"))
+
+    shooter = ev.where(F.col("p1").isNotNull()).join(g, "game_id", "left").withColumn("season", F.year(F.col("game_date")))
+    shots = (shooter.groupBy("season", F.col("p1").alias("player_id"))
+                   .agg(F.sum(F.when(is_make, 1).otherwise(0)).alias("fgm"),
+                        F.sum(F.when(is_make | is_miss, 1).otherwise(0)).alias("fga"),
+                        F.sum(F.when(is_three & is_make, 1).otherwise(0)).alias("fg3m"),
+                        F.sum(F.when(is_three & (is_make | is_miss), 1).otherwise(0)).alias("fg3a"),
+                        F.sum(F.when(is_ft & (~is_miss_text), 1).otherwise(0)).alias("ftm"),
+                        F.sum(F.when(is_ft, 1).otherwise(0)).alias("fta")))
+
+    # Assists p2 and rebounds t==4 by p1
+    ast = (ev.where(F.col("p2").isNotNull() & is_make)
+              .join(g, "game_id", "left").withColumn("season", F.year(F.col("game_date")))
+              .groupBy("season", F.col("p2").alias("player_id"))
+              .agg(F.count(F.lit(1)).alias("ast")))
+    reb = (ev.where((F.col("t") == 4) & F.col("p1").isNotNull())
+              .join(g, "game_id", "left").withColumn("season", F.year(F.col("game_date")))
+              .groupBy("season", F.col("p1").alias("player_id"))
+              .agg(F.count(F.lit(1)).alias("reb")))
+
+    # Points via score deltas on shooter events
+    from pyspark.sql import Window as _W
+    sc = shooter.where(F.col("score").isNotNull())
+    sc = (sc.withColumn("score_clean", F.regexp_replace("score", "\\s+", ""))
+             .withColumn("arr", F.split(F.col("score_clean"), "-"))
+             .withColumn("sh", F.when(F.size(F.col("arr")) == 2, F.element_at(F.col("arr"), 1).cast("int")))
+             .withColumn("sa", F.when(F.size(F.col("arr")) == 2, F.element_at(F.col("arr"), 2).cast("int"))))
+    w = _W.partitionBy("game_id").orderBy(F.col("eventnum"))
+    sc = (sc.withColumn("prevh", F.coalesce(F.lag(F.col("sh")).over(w), F.lit(0)))
+             .withColumn("preva", F.coalesce(F.lag(F.col("sa")).over(w), F.lit(0)))
+             .withColumn("delta_h", F.when(F.col("sh").isNotNull(), F.col("sh") - F.col("prevh")).otherwise(0))
+             .withColumn("delta_a", F.when(F.col("sa").isNotNull(), F.col("sa") - F.col("preva")).otherwise(0))
+             .withColumn("points", F.greatest(F.col("delta_h"), F.col("delta_a"))))
+    pts_season = (sc.where(F.col("points") > 0)
+                    .groupBy("season", F.col("p1").alias("player_id"))
+                    .agg(F.sum("points").alias("pts_sc")))
+
+    base = (gp.join(shots, ["season", "player_id"], "left")
+               .join(ast, ["season", "player_id"], "left")
+               .join(reb, ["season", "player_id"], "left")
+               .join(pts_season, ["season", "player_id"], "left"))
+    out = (base.fillna({"fgm": 0, "fga": 0, "fg3m": 0, "fg3a": 0, "ftm": 0, "fta": 0, "ast": 0, "reb": 0, "pts_sc": 0})
+               .withColumn("pts_formula", (F.col("fgm") - F.col("fg3m")) * F.lit(2) + F.col("fg3m") * F.lit(3) + F.col("ftm"))
+               .withColumn("pts", F.when(F.col("pts_sc").isNotNull(), F.col("pts_sc")).otherwise(F.col("pts_formula")))
+               .select("season", "player_id", F.col("g").cast("int").alias("g"),
+                       F.col("pts").cast("int").alias("pts"), F.col("ast").cast("int").alias("ast"), F.col("reb").cast("int").alias("reb"),
+                       F.col("fgm").cast("int").alias("fgm"), F.col("fga").cast("int").alias("fga"),
+                       F.col("fg3m").cast("int").alias("fg3m"), F.col("fg3a").cast("int").alias("fg3a"),
+                       F.col("ftm").cast("int").alias("ftm"), F.col("fta").cast("int").alias("fta")))
+
+    dest = os.path.join(warehouse, "global_player_season_from_pbp")
+    out.write.mode("overwrite").parquet(dest)
+    # Register view for immediate use
+    spark.read.parquet(dest).createOrReplaceTempView("GLOBAL_PLAYER_SEASON_FROM_PBP")
+    spark.catalog.cacheTable("GLOBAL_PLAYER_SEASON_FROM_PBP")
+    print(f"[OK] GLOBAL_PLAYER_SEASON_FROM_PBP written to {os.path.abspath(dest)}")
+    return dest
+
+
 def _ensure_prediction_views(spark: SparkSession) -> None:
     """Create TEAM_DAILY_DIFF and TEAM_CUMAVG used by prediction/training.
     Uses GAME_RESULT if present for reliable scores; restricts to last TRAIN_YEARS.
@@ -653,7 +834,7 @@ def build_labels_and_train_model(spark: SparkSession) -> Optional[PipelineModel]
                 SELECT game_date, home_team_id AS team_id, CAST(home_pts - away_pts AS DOUBLE) AS diff
                 FROM GAME_RESULT WHERE game_date >= {cutoff_expr}
                 UNION ALL
-                SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) * (-1.0) AS diff
+                SELECT game_date, away_team_id AS team_id, CAST(away_pts - home_pts AS DOUBLE) AS diff
                 FROM GAME_RESULT WHERE game_date >= {cutoff_expr}
                 """
             )
@@ -1417,6 +1598,30 @@ def admin_materialize_team_conference(persist: bool = True):
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+@app.post("/admin/build-player-agg")
+def admin_build_player_agg(force: bool = False):
+    """Build GLOBAL_PLAYER_SEASON_FROM_PBP parquet if missing (or force)."""
+    if spark is None:
+        return {"error": "service starting"}
+    dest = os.path.join(WAREHOUSE_DIR, "global_player_season_from_pbp")
+    exists = os.path.isdir(dest)
+    if exists and not force:
+        try:
+            spark.read.parquet(dest).createOrReplaceTempView("GLOBAL_PLAYER_SEASON_FROM_PBP")
+            spark.catalog.cacheTable("GLOBAL_PLAYER_SEASON_FROM_PBP")
+        except Exception:
+            pass
+        return {"ok": True, "path": dest, "built": False}
+    try:
+        os.makedirs(dest, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        out = _build_player_season_from_pbp(spark, WAREHOUSE_DIR)
+        return {"ok": True, "path": out, "built": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/player/{pid}")
 def player_page(pid: str):
     path = os.path.join(static_dir, "player.html")
@@ -1532,6 +1737,109 @@ def player_summary(pid: str):
     except Exception:
         return {"error": "invalid player id"}
     try:
+        # Prefer precomputed last season stats if available
+        tables = {t.name.upper() for t in spark.catalog.listTables()}
+        if "GLOBAL_PLAYER_LAST_SEASON" in tables:
+            df = (spark.table("GLOBAL_PLAYER_LAST_SEASON")
+                    .where(F.col("player_id").cast("int") == F.lit(pid_int))
+                    .limit(1))
+            row = df.collect()
+            out = {"_entity": "player", "id": str(pid_int)}
+            if row:
+                r = row[0].asDict(recursive=True)
+                gp = int(r.get("gp") or 0)
+                pts_total = int(r.get("pts_total") or 0)
+                tpm_total = int(r.get("tpm_total") or 0)
+                fgm_total = int(r.get("fgm_total") or 0)
+                ftm_total = int(r.get("ftm_total") or 0)
+                out.update({
+                    "games_played": gp,
+                    "total_points": pts_total,
+                    "avg_points": round(float(r.get("pts_pg") or 0.0), 2) if gp else 0.0,
+                    "made_threes": tpm_total,
+                    "made_twos": max(0, fgm_total - tpm_total),
+                    "made_fts": ftm_total,
+                    "team_id": (int(r.get("team_id")) if r.get("team_id") is not None else None),
+                    "season": r.get("season"),
+                })
+                # sanity check: fall back if clearly unrealistic
+                try:
+                    if out.get("avg_points", 0) > 60 or out.get("total_points", 0) > 5000:
+                        raise ValueError("implausible last-season stats, recompute")
+                except Exception:
+                    pass
+            if row and out.get("avg_points", 0) <= 60 and out.get("total_points", 0) <= 5000:
+                # enrich with base bio + draft if available and return
+                try:
+                    base = (spark.table("GLOBAL_PLAYER")
+                            .where(F.col("player_id").cast("int") == F.lit(pid_int))
+                            .limit(1).collect())
+                    if base:
+                        rb = base[0].asDict(recursive=True)
+                        out.update({k: rb.get(k) for k in ["full_name","position","team_id","experience","college","nationality"]})
+                        if out.get("full_name") and not out.get("name"):
+                            out["name"] = out.pop("full_name")
+                    try:
+                        dh = (spark.table("GLOBAL_DRAFT_HISTORY")
+                                  .where(F.col("player_id").cast("int") == F.lit(pid_int))
+                                  .orderBy(F.col("draft_year").asc(), F.col("overall_pick").asc())
+                                  .limit(1).collect())
+                        if dh:
+                            dr = dh[0].asDict(recursive=True)
+                            out.update({"draft_year": dr.get("draft_year"), "overall_pick": dr.get("overall_pick")})
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                return out
+            # fall through to resilient computation
+        # Fast path: pre-aggregated table
+        tbls = tables
+        if "GLOBAL_PLAYER_SEASON_FROM_PBP" in tbls:
+            ps = spark.table("GLOBAL_PLAYER_SEASON_FROM_PBP")
+            agg = (ps.where(F.col("player_id").cast("int") == F.lit(pid_int))
+                     .agg(
+                        F.sum(F.col("g")).alias("games_played"),
+                        F.sum(F.col("pts")).alias("total_points"),
+                        F.sum(F.col("fg3m")).alias("made_threes"),
+                        (F.sum(F.col("fgm")) - F.sum(F.col("fg3m"))).alias("made_twos"),
+                        F.sum(F.col("ftm")).alias("made_fts"),
+                     ).collect())
+            out = {"_entity": "player", "id": str(pid_int)}
+            if agg:
+                a = agg[0].asDict(recursive=True)
+                gp = int(a.get("games_played") or 0)
+                tp = int(a.get("total_points") or 0)
+                out.update({
+                    "games_played": gp,
+                    "total_points": tp,
+                    "avg_points": round((tp/gp), 2) if gp else 0.0,
+                    "made_threes": int(a.get("made_threes") or 0),
+                    "made_twos": int(a.get("made_twos") or 0),
+                    "made_fts": int(a.get("made_fts") or 0),
+                })
+            # enrich with base bio + draft if available
+            try:
+                base = spark.table("GLOBAL_PLAYER").where(F.col("player_id").cast("int") == F.lit(pid_int)).limit(1).collect()
+                if base:
+                    r = base[0].asDict(recursive=True)
+                    out.update({k: r.get(k) for k in ["full_name","position","team_id","experience","college","nationality"]})
+                    if out.get("full_name") and not out.get("name"):
+                        out["name"] = out.pop("full_name")
+                try:
+                    dh = (spark.table("GLOBAL_DRAFT_HISTORY")
+                              .where(F.col("player_id").cast("int") == F.lit(pid_int))
+                              .orderBy(F.col("draft_year").asc(), F.col("overall_pick").asc())
+                              .limit(1).collect())
+                    if dh:
+                        dr = dh[0].asDict(recursive=True)
+                        out.update({"draft_year": dr.get("draft_year"), "overall_pick": dr.get("overall_pick")})
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            return out
+        # Fallback: compute quick summary on-the-fly
         out = _quick_player_summary(spark, pid_int)
         return out
     except Exception as e:
@@ -1541,7 +1849,8 @@ def player_summary(pid: str):
 def player_scoring_by_season(pid: str):
     """Return per-season scoring splits (games, points, threes/twos/fts, ppg) for a player.
 
-    Derived from play-by-play score deltas joined to game dates.
+    Uses play-by-play event types (made/miss/ft) and text markers for 3PT,
+    avoiding fragile score-delta inference.
     """
     if spark is None:
         return {"items": []}
@@ -1550,52 +1859,133 @@ def player_scoring_by_season(pid: str):
     except Exception:
         return {"items": [], "error": "invalid player id"}
     try:
-        tables = {t.name for t in spark.catalog.listTables()}
+        tables = {t.name.upper() for t in spark.catalog.listTables()}
+        # Fast path: pre-aggregated table
+        if "GLOBAL_PLAYER_SEASON_FROM_PBP" in tables:
+            ps = spark.table("GLOBAL_PLAYER_SEASON_FROM_PBP")
+            rows = (ps.where(F.col("player_id").cast("int") == F.lit(pid_i))
+                      .select("season","g","pts","fgm","fg3m","ftm")
+                      .orderBy(F.col("season").asc()).collect())
+            items = []
+            for r in rows:
+                d = r.asDict(recursive=True)
+                g_ = int(d.get("g") or 0)
+                threes = int(d.get("fg3m") or 0)
+                twos = int((d.get("fgm") or 0) - threes)
+                fts = int(d.get("ftm") or 0)
+                pts = int(d.get("pts") or (3*threes + 2*twos + fts))
+                items.append({
+                    "season": int(d.get("season") or 0),
+                    "games": g_,
+                    "pts": pts,
+                    "ppg": round(pts/g_, 2) if g_ else 0.0,
+                    "threes": threes,
+                    "twos": twos,
+                    "fts": fts,
+                })
+            return {"items": items}
         if "GLOBAL_PLAY_BY_PLAY" not in tables or "GLOBAL_GAME" not in tables:
             return {"items": []}
         pbp = spark.table("GLOBAL_PLAY_BY_PLAY")
         g   = spark.table("GLOBAL_GAME").select(F.col("game_id").cast("int").alias("game_id"), F.col("game_date").cast("date").alias("game_date"))
-        pbp1 = pbp.where(F.col("player1_id").cast("int") == F.lit(pid_i)).select("game_id", "eventnum", "score")
-        if pbp1.rdd.isEmpty():
-            return {"items": []}
-        joined = pbp1.join(g, pbp1["game_id"].cast("int") == g["game_id"], "left")
-        from pyspark.sql import Window as _W
-        win = _W.partitionBy("game_id").orderBy("eventnum")
-        cleaned = (joined.filter(F.col("score").isNotNull())
-                   .withColumn("score_clean", F.regexp_replace("score", "\\s+", ""))
-                   .withColumn("score_arr", F.split("score_clean", "-"))
-                   .withColumn("score_home", F.when(F.size("score_arr") == 2, F.element_at("score_arr", 1).cast("int")))
-                   .withColumn("score_away", F.when(F.size("score_arr") == 2, F.element_at("score_arr", 2).cast("int")))
-                   .withColumn("prev_home", F.coalesce(F.lag("score_home").over(win), F.lit(0)))
-                   .withColumn("prev_away", F.coalesce(F.lag("score_away").over(win), F.lit(0)))
-                   .withColumn("delta_home", F.when(F.col("score_home").isNotNull(), F.col("score_home") - F.col("prev_home")).otherwise(0))
-                   .withColumn("delta_away", F.when(F.col("score_away").isNotNull(), F.col("score_away") - F.col("prev_away")).otherwise(0))
-                   .withColumn("points", F.greatest(F.col("delta_home"), F.col("delta_away")))
-                   .withColumn("season", F.year(F.col("game_date"))))
-        scoring = cleaned.where(F.col("points") > 0)
-        agg = (scoring.groupBy("season")
-               .agg(F.countDistinct("game_id").alias("games"),
-                    F.sum("points").alias("pts"),
-                    F.round((F.sum("points")/F.countDistinct("game_id")), 2).alias("ppg"),
-                    F.sum(F.when(F.col("points") == 3, 1).otherwise(0)).alias("threes"),
-                    F.sum(F.when(F.col("points") == 2, 1).otherwise(0)).alias("twos"),
-                    F.sum(F.when(F.col("points") == 1, 1).otherwise(0)).alias("fts"))
-               .orderBy(F.col("season").asc()))
-        items = [{
-            "season": int(r["season"]) if r["season"] is not None else None,
-            "games": int(r["games"] or 0),
-            "pts": int(r["pts"] or 0),
-            "ppg": float(r["ppg"] or 0.0),
-            "threes": int(r["threes"] or 0),
-            "twos": int(r["twos"] or 0),
-            "fts": int(r["fts"] or 0),
-        } for r in agg.collect()]
+
+        cols = [
+            F.col("game_id").cast("int").alias("game_id"),
+            F.col("eventmsgtype").cast("int").alias("t"),
+            F.col("player1_id").cast("int").alias("p1"),
+            F.col("player2_id").cast("int").alias("p2"),
+            F.coalesce(F.col("homedescription"), F.col("visitordescription"), F.col("neutraldescription")).alias("desc"),
+            F.col("player1_name").alias("p1n"),
+            F.col("player2_name").alias("p2n"),
+        ]
+        ev = pbp.select(*cols)
+        # any involvement by id
+        ev_any = ev.where((F.col("p1") == pid_i) | (F.col("p2") == pid_i))
+        if ev_any.limit(1).count() == 0:
+            # fallback by full name
+            try:
+                nm = (spark.table("GLOBAL_PLAYER")
+                          .where(F.col("player_id").cast("int") == F.lit(pid_i))
+                          .select(F.col("full_name").alias("n")).limit(1).collect())
+                if nm:
+                    full_name = nm[0]["n"]
+                    ev_any = ev.where((F.lower(F.col("p1n")) == F.lit(str(full_name).lower())) | (F.lower(F.col("p2n")) == F.lit(str(full_name).lower())))
+            except Exception:
+                pass
+        is_make = (F.col("t") == 1)
+        is_ft = (F.col("t") == 3)
+        is_three = F.lower(F.col("desc")).contains(F.lit("3pt")) | F.lower(F.col("desc")).contains(F.lit("3-pt")) | F.lower(F.col("desc")).contains(F.lit("three"))
+        is_miss_text = F.lower(F.col("desc")).contains(F.lit("miss"))
+
+        # Games per season (any involvement p1 or p2)
+        gp_df = (ev_any
+                   .join(g, "game_id", "left")
+                   .withColumn("season", F.year(F.col("game_date")))
+                   .groupBy("season").agg(F.countDistinct("game_id").alias("games")))
+
+        shooter = (ev.where(F.col("p1") == pid_i)
+                      .join(g, "game_id", "left")
+                      .withColumn("season", F.year(F.col("game_date"))))
+        if shooter.limit(1).count() == 0:
+            try:
+                nm = (spark.table("GLOBAL_PLAYER")
+                          .where(F.col("player_id").cast("int") == F.lit(pid_i))
+                          .select(F.col("full_name").alias("n")).limit(1).collect())
+                if nm:
+                    full_name = nm[0]["n"]
+                    shooter = (ev.where(F.lower(F.col("p1n")) == F.lit(str(full_name).lower()))
+                                  .join(g, "game_id", "left")
+                                  .withColumn("season", F.year(F.col("game_date"))))
+            except Exception:
+                pass
+        sh_agg = (shooter.groupBy("season")
+                  .agg(
+                      F.sum(F.when(is_make & is_three, 1).otherwise(0)).alias("threes"),
+                      F.sum(F.when(is_make & (~is_three), 1).otherwise(0)).alias("twos"),
+                      F.sum(F.when(is_ft & (~is_miss_text), 1).otherwise(0)).alias("fts")
+                  ))
+        sh_agg = sh_agg.withColumn("pts", F.col("fts") + F.col("threes")*F.lit(3) + F.col("twos")*F.lit(2))
+        out = (gp_df.join(sh_agg, "season", "left").orderBy(F.col("season").asc()))
+        rows = out.collect()
+        items = []
+        for r in rows:
+            d = r.asDict(recursive=True)
+            games = int(d.get("games") or 0)
+            threes = int(d.get("threes") or 0)
+            twos = int(d.get("twos") or 0)
+            fts = int(d.get("fts") or 0)
+            pts = 3*threes + 2*twos + fts
+            items.append({
+                "season": int(d.get("season") or 0),
+                "games": games,
+                "pts": pts,
+                "ppg": (round(pts/games, 2) if games else 0.0),
+                "threes": threes,
+                "twos": twos,
+                "fts": fts,
+            })
         return {"items": items}
     except Exception as e:
         return {"items": [], "error": str(e)}
 
 def _player_career_totals(spark: SparkSession, pid: int) -> dict:
-    tables = {t.name for t in spark.catalog.listTables()}
+    tables = {t.name.upper() for t in spark.catalog.listTables()}
+    # Fast path: pre-aggregated
+    if "GLOBAL_PLAYER_SEASON_FROM_PBP" in tables:
+        ps = spark.table("GLOBAL_PLAYER_SEASON_FROM_PBP")
+        pid_i = int(pid)
+        agg = (ps.where(F.col("player_id").cast("int") == F.lit(pid_i))
+                 .agg(
+                     F.sum("g").alias("gp"),
+                     F.sum("pts").alias("pts"),
+                     F.sum("ast").alias("ast"),
+                     F.sum("reb").alias("reb"),
+                 ).collect())
+        if not agg:
+            return {"gp": 0, "pts": 0, "ast": 0, "reb": 0, "ppg": 0.0, "apg": 0.0, "rpg": 0.0}
+        a = agg[0].asDict(recursive=True)
+        gp = int(a.get("gp") or 0); pts = int(a.get("pts") or 0); ast = int(a.get("ast") or 0); reb = int(a.get("reb") or 0)
+        return {"gp": gp, "pts": pts, "ast": ast, "reb": reb, "ppg": round(pts/gp,2) if gp else 0.0, "apg": round(ast/gp,2) if gp else 0.0, "rpg": round(reb/gp,2) if gp else 0.0}
     if "GLOBAL_PLAY_BY_PLAY" not in tables:
         return {"gp": 0, "pts": 0, "ast": 0, "reb": 0, "ppg": 0.0, "apg": 0.0, "rpg": 0.0}
     pbp = spark.table("GLOBAL_PLAY_BY_PLAY")
@@ -1606,30 +1996,55 @@ def _player_career_totals(spark: SparkSession, pid: int) -> dict:
                   F.col("eventmsgtype").cast("int").alias("t"),
                   F.col("player1_id").cast("int").alias("p1"),
                   F.col("player2_id").cast("int").alias("p2"),
-                  F.col("score")))
-    gp = (ev.where((F.col("p1") == pid_i) | (F.col("p2") == pid_i))
-             .select("game_id").distinct().count())
+                  F.col("homedescription").alias("hd"),
+                  F.col("visitordescription").alias("vd"),
+                  F.col("neutraldescription").alias("nd"),
+                  F.col("player1_name").alias("p1n"),
+                  F.col("player2_name").alias("p2n")))
+    ev_any = ev.where((F.col("p1") == pid_i) | (F.col("p2") == pid_i))
+    if ev_any.limit(1).count() == 0:
+        # Fallback by name
+        try:
+            nm = (spark.table("GLOBAL_PLAYER")
+                      .where(F.col("player_id").cast("int") == F.lit(pid_i))
+                      .select(F.col("full_name").alias("n")).limit(1).collect())
+            if nm:
+                full_name = nm[0]["n"]
+                ev_any = ev.where((F.lower(F.col("p1n")) == F.lit(str(full_name).lower())) | (F.lower(F.col("p2n")) == F.lit(str(full_name).lower())))
+        except Exception:
+            pass
+    gp = (ev_any.select("game_id").distinct().count())
 
-    # Points via score delta on events where player is p1 (shooter)
-    from pyspark.sql import Window as _W
-    evp1 = ev.where(F.col("p1") == pid_i).where(F.col("score").isNotNull())
-    if evp1.rdd.isEmpty():
-        pts = 0
+    # Points via event types (no score delta requirement)
+    is_make = (F.col("t") == 1)
+    is_three = F.lower(F.coalesce(F.col("hd"), F.col("vd"), F.col("nd"))).contains(F.lit("3pt")) | \
+               F.lower(F.coalesce(F.col("hd"), F.col("vd"), F.col("nd"))).contains(F.lit("3-pt")) | \
+               F.lower(F.coalesce(F.col("hd"), F.col("vd"), F.col("nd"))).contains(F.lit("three"))
+    is_ft = (F.col("t") == 3)
+    is_miss_text = F.lower(F.coalesce(F.col("hd"), F.col("vd"), F.col("nd"))).contains(F.lit("miss"))
+    shooter2 = ev.where(F.col("p1") == pid_i)
+    if shooter2.limit(1).count() == 0:
+        try:
+            nm = (spark.table("GLOBAL_PLAYER")
+                      .where(F.col("player_id").cast("int") == F.lit(pid_i))
+                      .select(F.col("full_name").alias("n")).limit(1).collect())
+            if nm:
+                full_name = nm[0]["n"]
+                shooter2 = ev.where(F.lower(F.col("p1n")) == F.lit(str(full_name).lower()))
+        except Exception:
+            pass
+    agg2 = shooter2.agg(
+        F.sum(F.when(is_make & (~is_three), 1).otherwise(0)).alias("twos"),
+        F.sum(F.when(is_make & is_three, 1).otherwise(0)).alias("threes"),
+        F.sum(F.when(is_ft & (~is_miss_text), 1).otherwise(0)).alias("fts"),
+    ).collect()
+    if agg2:
+        twos = int(agg2[0]["twos"] or 0)
+        threes = int(agg2[0]["threes"] or 0)
+        fts = int(agg2[0]["fts"] or 0)
+        pts = 2*twos + 3*threes + fts
     else:
-        clean = (evp1
-                 .withColumn("score_clean", F.regexp_replace("score", "\\s+", ""))
-                 .withColumn("score_arr", F.split("score_clean", "-"))
-                 .withColumn("score_home", F.when(F.size("score_arr") == 2, F.element_at("score_arr", 1).cast("int")))
-                 .withColumn("score_away", F.when(F.size("score_arr") == 2, F.element_at("score_arr", 2).cast("int")))
-                )
-        win = _W.partitionBy("game_id").orderBy(F.col("eventnum"))
-        clean = (clean
-                 .withColumn("prev_home", F.coalesce(F.lag("score_home").over(win), F.lit(0)))
-                 .withColumn("prev_away", F.coalesce(F.lag("score_away").over(win), F.lit(0)))
-                 .withColumn("delta_home", F.when(F.col("score_home").isNotNull(), F.col("score_home") - F.col("prev_home")).otherwise(0))
-                 .withColumn("delta_away", F.when(F.col("score_away").isNotNull(), F.col("score_away") - F.col("prev_away")).otherwise(0))
-                 .withColumn("points", F.greatest(F.col("delta_home"), F.col("delta_away"))))
-        pts = int(clean.where(F.col("points") > 0).agg(F.sum("points")).collect()[0][0] or 0)
+        pts = 0
 
     # Assists approximate: player2 on made shot (t == 1)
     ast = int(ev.where((F.col("p2") == pid_i) & (F.col("t") == 1)).count())
@@ -1649,7 +2064,38 @@ def player_career(pid: str):
     except Exception:
         return {"error": "invalid player id"}
     try:
-        return _player_career_totals(spark, pid_i)
+        tables = {t.name.upper() for t in spark.catalog.listTables()}
+        # Compute robust PBP-based first
+        pbp_out = _player_career_totals(spark, pid_i)
+        # If warehouse career exists and looks plausible, compare and pick sane result
+        if "GLOBAL_PLAYER_CAREER" in tables:
+            try:
+                df = (spark.table("GLOBAL_PLAYER_CAREER")
+                      .where((F.col("season_type") == F.lit("Regular Season")) & (F.col("player_id").cast("int") == F.lit(pid_i)))
+                      .limit(1))
+                row = df.collect()
+                if row:
+                    r = row[0].asDict(recursive=True)
+                    gp = int(r.get("gp") or 0)
+                    pts = int(r.get("pts_total") or 0)
+                    # sanity check: reject implausible values
+                    if gp <= 2000 and pts <= 60000:
+                        out = {
+                            "gp": gp,
+                            "pts": pts,
+                            "ast": int(r.get("ast_total") or 0),
+                            "reb": int(r.get("trb_total") or 0),
+                            "ppg": round(float(r.get("pts_pg") or (pts/gp if gp else 0.0)), 2) if gp else 0.0,
+                            "apg": round(float(r.get("ast_pg") or 0.0), 2) if r.get("ast_pg") is not None else (round((pbp_out.get("ast",0)/gp),2) if gp else 0.0),
+                            "rpg": round(float(r.get("trb_pg") or 0.0), 2) if r.get("trb_pg") is not None else (round((pbp_out.get("reb",0)/gp),2) if gp else 0.0),
+                            "fg_pct": round(float(r.get("fg_pct") or 0.0) * 100.0, 1) if r.get("fg_pct") is not None else None,
+                            "fg3_pct": round(float(r.get("tp_pct") or 0.0) * 100.0, 1) if r.get("tp_pct") is not None else None,
+                            "ft_pct": round(float(r.get("ft_pct") or 0.0) * 100.0, 1) if r.get("ft_pct") is not None else None,
+                        }
+                        return out
+            except Exception:
+                pass
+        return pbp_out
     except Exception as e:
         return {"error": str(e)}
 
@@ -1666,7 +2112,91 @@ def player_season_summary(pid: str):
         pid_i = int(str(pid))
     except Exception:
         return {"items": [], "career": {}, "error": "invalid player id"}
-    tables = {t.name for t in spark.catalog.listTables()}
+    tables = {t.name.upper() for t in spark.catalog.listTables()}
+    # Optionally prefer GLOBAL_PLAYER_STATS via env toggle; default disabled to avoid inflated data
+    # Revert: use parquet GLOBAL_PLAYER_STATS by default (previous behavior)
+    use_gps = os.environ.get("USE_GLOBAL_PLAYER_STATS_FOR_SEASONS", "1").lower() in ["1","true","yes"]
+    if use_gps and ("GLOBAL_PLAYER_STATS" in tables):
+        try:
+            df = (spark.table("GLOBAL_PLAYER_STATS")
+                    .where((F.col("season_type") == F.lit("Regular Season")) & (F.col("player_id").cast("int") == F.lit(int(pid))))
+                    .orderBy(F.col("season").asc()))
+            rows = df.collect()
+            items = []
+            career = {"g": 0, "pts": 0, "ast": 0, "reb": 0, "fgm": 0, "fga": 0, "fg3m": 0, "fg3a": 0, "ftm": 0, "fta": 0}
+            for r in rows:
+                d = r.asDict(recursive=True)
+                g_ = int(d.get("gp") or 0)
+                pts_ = int(d.get("pts_total") or 0)
+                ast_ = int(d.get("ast_total") or 0)
+                reb_ = int(d.get("trb_total") or 0)
+                fgm_ = int(d.get("fgm_total") or 0); fga_ = int(d.get("fga_total") or 0)
+                fg3m_ = int(d.get("tpm_total") or 0); fg3a_ = int(d.get("tpa_total") or 0)
+                ftm_ = int(d.get("ftm_total") or 0); fta_ = int(d.get("fta_total") or 0)
+                items.append({
+                    "season": d.get("season"),
+                    "g": g_, "pts": pts_, "ast": ast_, "reb": reb_,
+                    "fgm": fgm_, "fga": fga_, "fg_pct": (round(float(d.get("fg_pct") or 0.0) * 100.0, 1) if d.get("fg_pct") is not None else None),
+                    "fg3m": fg3m_, "fg3a": fg3a_, "fg3_pct": (round(float(d.get("tp_pct") or 0.0) * 100.0, 1) if d.get("tp_pct") is not None else None),
+                    "ftm": ftm_, "fta": fta_, "ft_pct": (round(float(d.get("ft_pct") or 0.0) * 100.0, 1) if d.get("ft_pct") is not None else None),
+                    "ppg": (round(float(d.get("pts_pg") or (pts_/g_ if g_ else 0.0)), 2) if g_ else 0.0),
+                    "apg": (round(float(d.get("ast_pg") or (ast_/g_ if g_ else 0.0)), 2) if g_ else 0.0),
+                    "rpg": (round(float(d.get("trb_pg") or (reb_/g_ if g_ else 0.0)), 2) if g_ else 0.0),
+                })
+                career["g"] += g_; career["pts"] += pts_; career["ast"] += ast_; career["reb"] += reb_
+                career["fgm"] += fgm_; career["fga"] += fga_; career["fg3m"] += fg3m_; career["fg3a"] += fg3a_; career["ftm"] += ftm_; career["fta"] += fta_
+            if career["g"] > 0:
+                career.update({
+                    "ppg": round(career["pts"]/career["g"], 2),
+                    "apg": round(career["ast"]/career["g"], 2),
+                    "rpg": round(career["reb"]/career["g"], 2),
+                    "fg_pct": round((career["fgm"]/career["fga"]*100) if career["fga"] else 0.0, 1),
+                    "fg3_pct": round((career["fg3m"]/career["fg3a"]*100) if career["fg3a"] else 0.0, 1),
+                    "ft_pct": round((career["ftm"]/career["fta"]*100) if career["fta"] else 0.0, 1),
+                })
+            if career.get("pts", 0) <= 60000 and career.get("g", 0) <= 2000:
+                return {"items": items, "career": career}
+        except Exception:
+            pass
+    # Fast path: use pre-aggregated per-season totals if present
+    if "GLOBAL_PLAYER_SEASON_FROM_PBP" in tables:
+        try:
+            ps = spark.table("GLOBAL_PLAYER_SEASON_FROM_PBP")
+            rows = (ps.where(F.col("player_id").cast("int") == F.lit(pid_i))
+                      .orderBy(F.col("season").asc()).collect())
+            items = []
+            career = {"g": 0, "pts": 0, "ast": 0, "reb": 0, "fgm": 0, "fga": 0, "fg3m": 0, "fg3a": 0, "ftm": 0, "fta": 0}
+            for r in rows:
+                d = r.asDict(recursive=True)
+                g_ = int(d.get("g") or 0)
+                p_ = int(d.get("pts") or 0)
+                a_ = int(d.get("ast") or 0)
+                r_ = int(d.get("reb") or 0)
+                fgm_ = int(d.get("fgm") or 0); fga_ = int(d.get("fga") or 0)
+                fg3m_ = int(d.get("fg3m") or 0); fg3a_ = int(d.get("fg3a") or 0)
+                ftm_ = int(d.get("ftm") or 0); fta_ = int(d.get("fta") or 0)
+                items.append({
+                    "season": int(d.get("season") or 0),
+                    "g": g_, "pts": p_, "ast": a_, "reb": r_,
+                    "fgm": fgm_, "fga": fga_, "fg_pct": (round(fgm_/fga_*100,1) if fga_ else 0.0),
+                    "fg3m": fg3m_, "fg3a": fg3a_, "fg3_pct": (round(fg3m_/fg3a_*100,1) if fg3a_ else 0.0),
+                    "ftm": ftm_, "fta": fta_, "ft_pct": (round(ftm_/fta_*100,1) if fta_ else 0.0),
+                    "ppg": (round(p_/g_, 2) if g_ else 0.0), "apg": (round(a_/g_, 2) if g_ else 0.0), "rpg": (round(r_/g_, 2) if g_ else 0.0)
+                })
+                career["g"] += g_; career["pts"] += p_; career["ast"] += a_; career["reb"] += r_
+                career["fgm"] += fgm_; career["fga"] += fga_; career["fg3m"] += fg3m_; career["fg3a"] += fg3a_; career["ftm"] += ftm_; career["fta"] += fta_
+            if career["g"] > 0:
+                career.update({
+                    "ppg": round(career["pts"]/career["g"], 2),
+                    "apg": round(career["ast"]/career["g"], 2),
+                    "rpg": round(career["reb"]/career["g"], 2),
+                    "fg_pct": round((career["fgm"]/career["fga"]*100) if career["fga"] else 0.0, 1),
+                    "fg3_pct": round((career["fg3m"]/career["fg3a"]*100) if career["fg3a"] else 0.0, 1),
+                    "ft_pct": round((career["ftm"]/career["fta"]*100) if career["fta"] else 0.0, 1),
+                })
+            return {"items": items, "career": career}
+        except Exception:
+            pass
     if ("GLOBAL_PLAY_BY_PLAY" not in tables) or ("GLOBAL_GAME" not in tables):
         return {"items": [], "career": {}}
     pbp = spark.table("GLOBAL_PLAY_BY_PLAY")
@@ -1686,7 +2216,7 @@ def player_season_summary(pid: str):
     ]
     ev = pbp.select(*cols)
     ev = ev.where((F.col("p1") == pid_i) | (F.col("p2") == pid_i))
-    if ev.rdd.isEmpty():
+    if ev.limit(1).count() == 0:
         return {"items": [], "career": {"gp": 0, "pts": 0, "ast": 0, "reb": 0}}
 
     desc = F.coalesce(F.col("hd"), F.col("vd"), F.col("nd")).alias("desc")
@@ -1730,14 +2260,16 @@ def player_season_summary(pid: str):
     reb = F.sum(F.when(is_reb & (F.col("p1") == pid_i), 1).otherwise(0)).alias("reb")
 
     # join game date for season
-    j = ev.join(g, ev["game_id"] == g["game_id"], "left").withColumn("season", F.year(F.col("game_date")))
+    # Join on the common key to avoid duplicate columns/ambiguity
+    j = ev.join(g, "game_id", "left").withColumn("season", F.year(F.col("game_date")))
     base = (j.groupBy("season")
               .agg(F.countDistinct("game_id").alias("g")))
     shooter_by_season = shooter.join(g, "game_id", "left").withColumn("season", F.year(F.col("game_date")))
     shots_season = (shooter_by_season.groupBy("season").agg(fgm, fga, fg3m, fg3a, ftm, fta))
     # pts/ast/reb per season from earlier expressions need recomputation with season
-    sc_season = (shooter_sc.join(g, "game_id", "left").withColumn("season", F.year(F.col("game_date")))
-                 .groupBy("season").agg(pts))
+    # Derive points from makes + FT (no score delta).
+    # Compute inside shots_season columns so we can compose later
+    shots_season = shots_season.withColumn("pts", F.col("ftm") + (F.col("fgm") - F.col("fg3m")) * F.lit(2) + F.col("fg3m") * F.lit(3))
     ast_season = (ev.where(is_ast).join(g, "game_id", "left").withColumn("season", F.year(F.col("game_date")))
                   .groupBy("season").agg(ast))
     reb_season = (ev.where(is_reb & (F.col("p1") == pid_i)).join(g, "game_id", "left").withColumn("season", F.year(F.col("game_date")))
@@ -1745,7 +2277,6 @@ def player_season_summary(pid: str):
 
     out = (base
            .join(shots_season, "season", "left")
-           .join(sc_season, "season", "left")
            .join(ast_season, "season", "left")
            .join(reb_season, "season", "left")
            .orderBy(F.col("season").asc()))
@@ -1788,6 +2319,62 @@ def player_season_summary(pid: str):
             "ft_pct": round((career["ftm"]/career["fta"]*100) if career["fta"] else 0.0, 1),
         })
     return {"items": items, "career": career}
+
+# ---------- Debug helpers ----------
+@app.get("/debug/tables")
+def debug_tables():
+    try:
+        names = [t.name for t in spark.catalog.listTables()] if spark is not None else []
+        return {"warehouse": os.path.abspath(WAREHOUSE_DIR), "tables": names}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/debug/config")
+def debug_config():
+    try:
+        return {
+            "WAREHOUSE_DIR": os.path.abspath(WAREHOUSE_DIR),
+            "SPARK_LOCAL_DIRS": os.environ.get("SPARK_LOCAL_DIRS"),
+            "JAVA_HOME": os.environ.get("JAVA_HOME"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/debug/pbp-check/{pid}")
+def debug_pbp_check(pid: str):
+    if spark is None:
+        return {"error": "service starting"}
+    try:
+        pid_i = int(str(pid))
+    except Exception:
+        return {"error": "invalid player id"}
+    try:
+        tables = {t.name.upper() for t in spark.catalog.listTables()}
+        if "GLOBAL_PLAY_BY_PLAY" not in tables:
+            return {"error": "GLOBAL_PLAY_BY_PLAY missing"}
+        pbp = spark.table("GLOBAL_PLAY_BY_PLAY")
+        ev = pbp.select(
+            F.col("game_id").cast("int").alias("game_id"),
+            F.col("player1_id").cast("int").alias("p1"),
+            F.col("player2_id").cast("int").alias("p2"),
+            F.col("player1_name").alias("p1n"),
+            F.col("player2_name").alias("p2n"),
+        )
+        cnt_id = int(ev.where((F.col("p1") == pid_i) | (F.col("p2") == pid_i)).count())
+        nm_row = (spark.table("GLOBAL_PLAYER")
+                        .where(F.col("player_id").cast("int") == F.lit(pid_i))
+                        .select(F.col("full_name").alias("n")).limit(1).collect())
+        n = nm_row[0]["n"] if nm_row else None
+        if n:
+            cnt_name = int(ev.where((F.lower(F.col("p1n")) == F.lit(str(n).lower())) | (F.lower(F.col("p2n")) == F.lit(str(n).lower()))).count())
+        else:
+            cnt_name = 0
+        sample = []
+        if cnt_name and cnt_id == 0:
+            sample = [r.asDict(recursive=True) for r in ev.where((F.lower(F.col("p1n")) == F.lit(str(n).lower())) | (F.lower(F.col("p2n")) == F.lit(str(n).lower()))).limit(5).collect()]
+        return {"id": pid_i, "name": n, "pbp_by_id": cnt_id, "pbp_by_name": cnt_name, "sample": sample}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/entity/team/{tid}")
 def entity_team(tid: str):

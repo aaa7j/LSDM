@@ -14,7 +14,7 @@
       </div>
     </div>
     <div class="wrap">
-      <div id="content" class="card">Loading...</div>
+      <div id="content" class="card player-card">Loading...</div>
     </div>
     <script>
       function getId() {
@@ -22,77 +22,196 @@
         if (m) return decodeURIComponent(m[1]);
         const u = new URL(location.href); return u.searchParams.get('id');
       }
+      function initials(name) {
+        try {
+          const parts = String(name||'').trim().split(/\s+/).filter(Boolean);
+          if (!parts.length) return '?';
+          if (parts.length === 1) return parts[0].slice(0,1).toUpperCase();
+          return (parts[0][0] + parts[parts.length-1][0]).toUpperCase();
+        } catch { return '?'; }
+      }
+      function fmtPct(v) { return (v===0 ? '0.0' : (v || v===0 ? Number(v).toFixed(1) : '-')); }
+      function fmtNum(v) { return (v===0 ? '0' : (v!=null ? String(v) : '-')); }
+      function fmtDate(d) {
+        if (!d) return '-';
+        try { const dt = new Date(d); if (!isNaN(+dt)) return dt.toLocaleDateString(); } catch {}
+        return String(d);
+      }
+      let __apiBase = '';
+      function api(p) {
+        if (location.protocol === 'file:' && __apiBase) return __apiBase.replace(/\/$/, '') + p;
+        return p;
+      }
+      async function resolveApiBase() {
+        if (location.protocol !== 'file:') { __apiBase = ''; return; }
+        // preference order: saved -> 127.0.0.1:8000 -> localhost:8000
+        const saved = (()=>{ try { return localStorage.getItem('apiBase') || ''; } catch { return ''; }})();
+        const cands = [saved, 'http://127.0.0.1:8000', 'http://localhost:8000'].filter(Boolean);
+        for (const b of cands) {
+          try {
+            const r = await fetch(b.replace(/\/$/, '') + '/health', { mode: 'cors' });
+            if (r.ok) { __apiBase = b; try{ localStorage.setItem('apiBase', b);}catch{} return; }
+          } catch {}
+        }
+        __apiBase = cands[0] || 'http://127.0.0.1:8000';
+      }
       async function load() {
+        await resolveApiBase();
         const id = getId();
         const el = document.getElementById('content');
         if (!id) { el.textContent = 'Missing player id'; return; }
         try {
-          const res = await fetch(`/entity/player/${encodeURIComponent(id)}`);
+          const [res, sumRes, seasRes, carRes] = await Promise.all([
+            fetch(api(`/entity/player/${encodeURIComponent(id)}`)),
+            fetch(api(`/player/summary/${encodeURIComponent(id)}`), { headers: { 'accept':'application/json' } }),
+            fetch(api(`/player/season-summary/${encodeURIComponent(id)}`), { headers: { 'accept':'application/json' } }),
+            fetch(api(`/player/career/${encodeURIComponent(id)}`), { headers: { 'accept':'application/json' } })
+          ]);
           if (!res.ok) throw new Error('HTTP '+res.status);
           const d = await res.json();
           if (d.error) { el.textContent = d.error; return; }
+          const s = sumRes.ok ? (await sumRes.json()) : {};
+          const ss = seasRes.ok ? (await seasRes.json()) : { items: [], career: {} };
+          const items = Array.isArray(ss.items) ? ss.items : [];
+          function calcCareerFromItems(items){
+            const out = { g:0, pts:0, ast:0, reb:0, fgm:0, fga:0, fg3m:0, fg3a:0, ftm:0, fta:0 };
+            for (const r of (items||[])) {
+              out.g += Number(r.g||r.games||0);
+              out.pts += Number(r.pts||0);
+              out.ast += Number(r.ast||0);
+              out.reb += Number(r.reb||r.trb||0);
+              out.fgm += Number(r.fgm||0);
+              out.fga += Number(r.fga||0);
+              out.fg3m += Number(r.fg3m||0);
+              out.fg3a += Number(r.fg3a||0);
+              out.ftm += Number(r.ftm||0);
+              out.fta += Number(r.fta||0);
+            }
+            if (out.g>0){
+              out.ppg = +(out.pts/out.g).toFixed(2);
+              out.apg = +(out.ast/out.g).toFixed(2);
+              out.rpg = +(out.reb/out.g).toFixed(2);
+              out.fg_pct = +(out.fga ? (out.fgm/out.fga*100).toFixed(1) : 0);
+              out.fg3_pct = +(out.fg3a ? (out.fg3m/out.fg3a*100).toFixed(1) : 0);
+              out.ft_pct = +(out.fta ? (out.ftm/out.fta*100).toFixed(1) : 0);
+            }
+            return out;
+          }
+          const careerFromItems = calcCareerFromItems(items);
+          const cfast = carRes.ok ? (await carRes.json()) : {};
 
           const box = document.createElement('div');
-          box.style.display = 'grid'; box.style.gap = '8px';
-          const title = document.createElement('div'); title.className = 'title'; title.textContent = d.name || d.id;
-          const sub = document.createElement('div'); sub.className = 'sub'; sub.textContent = `${d.position||''} ${d.nationality ? '· ' + d.nationality : ''}`.trim();
-          box.appendChild(title); if (sub.textContent) box.appendChild(sub);
-          const extra = document.createElement('div'); extra.className='extra';
-          extra.textContent = `Height: ${d.height||'-'}  |  Weight: ${d.weight||'-'}  |  College: ${d.college||'-'}  |  Exp: ${d.experience||'-'}`;
-          box.appendChild(extra);
+          box.className = 'player-page';
+
+          // Header
+          const head = document.createElement('div'); head.className = 'player-head';
+          const avatar = document.createElement('div'); avatar.className = 'player-avatar'; avatar.textContent = initials(d.name || d.id);
+          const bio = document.createElement('div'); bio.className = 'player-bio';
+          const name = document.createElement('div'); name.className = 'player-name'; name.textContent = d.name || d.id;
+          const fullname = document.createElement('div'); fullname.className = 'player-full';
+          const aka = [];
+          if (d.first_name || d.last_name) aka.push([d.first_name, d.last_name].filter(Boolean).join(' '));
+          if (d.nationality) aka.push(d.nationality);
+          fullname.textContent = aka.filter(Boolean).join(' • ');
+          const facts = document.createElement('div'); facts.className = 'player-facts';
+          facts.textContent = `Position: ${d.position||'-'} • Height: ${d.height||'-'} • Weight: ${d.weight||'-'} • College: ${d.college||'-'} • Exp: ${d.experience||'-'}`;
+          const team = document.createElement('div'); team.className = 'player-team';
           if (d.team) {
-            const link = document.createElement('a'); link.href = `/team/${encodeURIComponent(d.team.id)}`; link.textContent = `Team: ${d.team.name || d.team.id}${d.team.city? ' ('+d.team.city+')':''}`; link.style.color='var(--accent)'; link.style.textDecoration='none';
-            box.appendChild(link);
+            const a = document.createElement('a');
+            a.href = (location.protocol === 'file:' ? `team.html?id=${encodeURIComponent(d.team.id)}` : `/team/${encodeURIComponent(d.team.id)}`);
+            a.textContent = `${d.team.city? d.team.city+' ':''}${d.team.name || d.team.id}`; a.className='link';
+            team.appendChild(document.createTextNode('Team: ')); team.appendChild(a);
           }
+          const born = document.createElement('div'); born.className='player-born';
+          born.textContent = `Born: ${fmtDate(d.birth_date)}`;
+          bio.appendChild(name); if (fullname.textContent) bio.appendChild(fullname); bio.appendChild(facts); if (team.firstChild) bio.appendChild(team); bio.appendChild(born);
 
-          // Quick summary (position, GP, shooting splits, PTS/PPG, draft)
-          try {
-            const sr = await fetch(`/player/summary/${encodeURIComponent(id)}`, { headers: { 'accept':'application/json' } });
-            if (sr.ok) {
-              const s = await sr.json(); if (!s.error) {
-                const ms = document.createElement('div'); ms.className = 'mini-stats';
-                const left = []; if (s.position) left.push(String(s.position)); if (typeof s.games_played === 'number') left.push('GP ' + s.games_played);
-                const mid = []; if (typeof s.made_threes === 'number') mid.push(s.made_threes + ' 3PM'); if (typeof s.made_twos === 'number') mid.push(s.made_twos + ' 2PM'); if (typeof s.made_fts === 'number') mid.push(s.made_fts + ' FTM');
-                const right = []; if (typeof s.total_points === 'number') right.push('PTS ' + s.total_points); if (typeof s.avg_points === 'number') right.push('PPG ' + s.avg_points);
-                const draft = (s.draft_year ? ('Draft ' + s.draft_year) : '') + (s.overall_pick ? (' · #' + s.overall_pick) : '');
-                ms.textContent = [left.join(' · '), mid.join(' · '), right.join(' · '), draft].filter(Boolean).join('  |  ');
-                box.appendChild(ms);
-              }
-            }
-          } catch {}
+          const right = document.createElement('div'); right.className='player-right';
+          const chips = document.createElement('div'); chips.className='award-chips';
+          const addChip = (t)=>{ const c=document.createElement('div'); c.className='award'; c.textContent=t; chips.appendChild(c); };
+          if (careerFromItems.g) addChip(`GP ${careerFromItems.g}`);
+          else if (s && typeof s.games_played === 'number') addChip(`GP ${s.games_played}`);
+          if (careerFromItems.ppg != null) addChip(`PPG ${careerFromItems.ppg}`);
+          else if (s && typeof s.avg_points === 'number') addChip(`PPG ${s.avg_points}`);
+          if (careerFromItems.pts) addChip(`PTS ${careerFromItems.pts}`);
+          else if (s && typeof s.total_points === 'number') addChip(`PTS ${s.total_points}`);
+          if (s && (s.draft_year || s.overall_pick)) addChip(`Draft ${s.draft_year||'-'}${s.overall_pick? ' #'+s.overall_pick:''}`);
+          if (chips.childElementCount === 0) {
+            if (d.position) addChip(String(d.position));
+            if (d.nationality) addChip(String(d.nationality));
+            if (d.experience != null) addChip(`Exp ${d.experience}`);
+            if (d.team && d.team.name) addChip(d.team.name);
+          }
+          right.appendChild(chips);
 
-          // Career line (GP, PPG, APG, RPG) — always try to show
-          try {
-            const cr = await fetch(`/player/career/${encodeURIComponent(id)}`, { headers: { 'accept':'application/json' } });
-            if (cr.ok) {
-              const c = await cr.json();
-              const line = document.createElement('div'); line.className='mini-stats';
-              const gp = (c && c.gp != null) ? c.gp : '-';
-              const ppg = (c && c.ppg != null) ? c.ppg : '-';
-              const apg = (c && c.apg != null) ? c.apg : '-';
-              const rpg = (c && c.rpg != null) ? c.rpg : '-';
-              line.textContent = `Career · GP ${gp} · PPG ${ppg} · APG ${apg} · RPG ${rpg}`;
-              box.appendChild(line);
-            }
-          } catch {}
+          head.appendChild(avatar); head.appendChild(bio); head.appendChild(right);
+          box.appendChild(head);
 
-          // Per-season scoring summary (if available)
+          // Summary table (latest season + career)
+          const section = document.createElement('div'); section.className='summary-section';
+          const ttitle = document.createElement('div'); ttitle.className='title'; ttitle.textContent = 'Summary'; section.appendChild(ttitle);
+          const grid = document.createElement('div'); grid.className='summary-table';
+          const headRow = ['Summary','G','PTS','TRB','AST','FG%','3P%','FT%','eFG%','PER','WS'];
+          headRow.forEach(h => { const c=document.createElement('div'); c.className='head'; c.textContent=h; grid.appendChild(c); });
+          let latest = null; if (items.length) latest = items.reduce((a,b)=> (a && (a.season||0)>=(b.season||0))?a:b, items[0]);
+          let career = items.length ? careerFromItems : (ss.career || {});
+          // Fallback: if season-summary empty but quick career has values, merge
+          if ((!career || Object.keys(career).length === 0 || ((career.g||0)===0 && (career.pts||0)===0)) && cfast && (cfast.gp != null)) {
+            career = { g: cfast.gp, pts: cfast.pts, ast: cfast.ast, reb: cfast.reb };
+          }
+          function pushRow(label, r) {
+            const fgPct = r && r.fg_pct!=null ? r.fg_pct : null;
+            const fg3Pct = r && r.fg3_pct!=null ? r.fg3_pct : null;
+            const ftPct = r && r.ft_pct!=null ? r.ft_pct : null;
+            const efgPct = (r && r.fgm!=null && r.fga>0) ? ((r.fgm + 0.5*(r.fg3m||0)) / r.fga * 100) : null;
+            const cells = [
+              label,
+              fmtNum(r && r.g),
+              fmtNum(r && r.pts),
+              fmtNum(r && (r.reb!=null ? r.reb : r.trb)),
+              fmtNum(r && r.ast),
+              fmtPct(fgPct),
+              fmtPct(fg3Pct),
+              fmtPct(ftPct),
+              fmtPct(efgPct!=null? Math.round(efgPct*10)/10 : null),
+              '-',
+              '-',
+            ];
+            cells.forEach(v => { const c=document.createElement('div'); c.className='cell'; c.textContent=v; grid.appendChild(c); });
+          }
+          if (latest) pushRow(String(latest.season||'-'), latest);
+          pushRow('Career', career);
+          section.appendChild(grid);
+          box.appendChild(section);
+
+          // Optional: per-season scoring mini grid
           try {
-            const rr = await fetch(`/player/scoring-by-season/${encodeURIComponent(id)}`, { headers: { 'accept':'application/json' } });
+            const rr = await fetch(api(`/player/scoring-by-season/${encodeURIComponent(id)}`), { headers: { 'accept':'application/json' } });
             if (rr.ok) {
-              const data = await rr.json(); const items = data.items || [];
-              if (items.length) {
-                const section = document.createElement('div'); section.className = 'section';
-                const tt = document.createElement('div'); tt.className = 'title'; tt.textContent = 'Scoring by season'; section.appendChild(tt);
-                const grid = document.createElement('div'); grid.className = 'player-stats';
-                const head = ['Season','GP','PTS','PPG','3PM','2PM','FTM'];
-                head.forEach(h => { const c=document.createElement('div'); c.className='head'; c.textContent=h; grid.appendChild(c); });
-                items.forEach(r => {
+              const data = await rr.json(); const it = data.items || [];
+              if (it.length) {
+                const sec2 = document.createElement('div'); sec2.className = 'section';
+                const tt = document.createElement('div'); tt.className = 'title'; tt.textContent = 'Scoring by season'; sec2.appendChild(tt);
+                const g2 = document.createElement('div'); g2.className = 'player-stats';
+                const head2 = ['Season','GP','PTS','PPG','3PM','2PM','FTM'];
+                head2.forEach(h => { const c=document.createElement('div'); c.className='head'; c.textContent=h; g2.appendChild(c); });
+                it.forEach(r => {
                   const row = [String(r.season||'-'), String(r.games||'-'), String(r.pts||'-'), String(r.ppg||'-'), String(r.threes||'-'), String(r.twos||'-'), String(r.fts||'-')];
-                  row.forEach(v => { const c=document.createElement('div'); c.className='cell'; c.textContent=v; grid.appendChild(c); });
+                  row.forEach(v => { const c=document.createElement('div'); c.className='cell'; c.textContent=v; g2.appendChild(c); });
                 });
-                section.appendChild(grid); box.appendChild(section);
+                sec2.appendChild(g2); box.appendChild(sec2);
               }
+            }
+          } catch {}
+
+          // If nothing numeric is available, surface a small note
+          try {
+            const hasNums = (latest && (latest.g||latest.pts||latest.ast||latest.reb)) || (career && (career.g||career.pts||career.ast||career.reb));
+            if (!hasNums) {
+              const note = document.createElement('div'); note.className='sub';
+              note.style.color='var(--muted)'; note.style.marginTop='6px';
+              note.textContent = 'No per-player box or play-by-play data available in the current warehouse.';
+              box.appendChild(note);
             }
           } catch {}
 
@@ -105,4 +224,3 @@
     </script>
   </body>
  </html>
-

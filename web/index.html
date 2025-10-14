@@ -152,13 +152,14 @@
       }
       function openEntity(it) {
         if (!it || !it._entity || !it._id) return;
+        const isFile = (location.protocol === 'file:');
         let path = '/';
-        if (it._entity === 'player') path = `/player/${encodeURIComponent(it._id)}`;
-        else if (it._entity === 'team') path = `/team/${encodeURIComponent(it._id)}`;
-        else if (it._entity === 'game') path = `/game/${encodeURIComponent(it._id)}`;
+        if (it._entity === 'player') path = isFile ? `player.html?id=${encodeURIComponent(it._id)}` : `/player/${encodeURIComponent(it._id)}`;
+        else if (it._entity === 'team') path = isFile ? `team.html?id=${encodeURIComponent(it._id)}` : `/team/${encodeURIComponent(it._id)}`;
+        else if (it._entity === 'game') path = isFile ? `game.html?id=${encodeURIComponent(it._id)}` : `/game/${encodeURIComponent(it._id)}`;
         else if (it._entity === 'matchup') {
           const parts = String(it._id).split('-');
-          if (parts.length === 2) path = `/matchup/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`;
+          if (parts.length === 2) path = isFile ? `matchup.html?home=${encodeURIComponent(parts[0])}&away=${encodeURIComponent(parts[1])}` : `/matchup/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}`;
         }
         window.location.href = path;
       }
