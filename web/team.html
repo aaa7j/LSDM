@@ -10,20 +10,69 @@
     <div class="topbar"><div class="inner"><a class="brand" href="/" onclick="if (location.protocol==='file:'){location.href='index.html'; return false;}">NBA Search</a><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
     <div class="wrap"><div id="content" class="card">Loading...</div></div>
     <script src="/static/app.js"></script>
-    <script>
-      function getId(){ const m=location.pathname.match(/\/team\/(.+)$/); if(m) return decodeURIComponent(m[1]); const u=new URL(location.href); return u.searchParams.get('id');}
-      async function load(){ const id=getId(); const el=document.getElementById('content'); if(!id){ el.textContent='Missing team id'; return; }
-        try{ const res=await fetch(`/entity/team/${encodeURIComponent(id)}`); if(!res.ok) throw new Error('HTTP '+res.status); const d=await res.json(); if(d.error){ el.textContent=d.error; return; }
-          const box=document.createElement('div'); box.style.display='grid'; box.style.gap='6px';
-          const title=document.createElement('div'); title.className='title'; title.textContent=d.name||d.id;
-          const sub=document.createElement('div'); sub.className='sub'; sub.textContent=`${d.city||''} ${d.conference? '· '+d.conference:''} ${d.division? '· '+d.division:''}`.trim();
-          box.appendChild(title); if(sub.textContent) box.appendChild(sub);
-          const extra=document.createElement('div'); extra.className='extra'; extra.textContent=`Arena: ${d.arena||'-'}  |  State: ${d.state||'-'}`; box.appendChild(extra);
-          el.innerHTML=''; el.appendChild(box);
-        } catch(e){ el.textContent='Error: '+(e.message||e); }
+<script>
+  function getId(){
+    const m=location.pathname.match(/\/team\/(.+)$/);
+    if(m) return decodeURIComponent(m[1]);
+    const u=new URL(location.href);
+    return u.searchParams.get('id');
+  }
+  async function load(){
+    const id=getId(); const el=document.getElementById('content');
+    if(!id){ el.textContent='Missing team id'; return; }
+    try{
+      const res=await fetch(`/entity/team/${encodeURIComponent(id)}`);
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      const d=await res.json();
+      if(d.error){ el.textContent=d.error; return; }
+
+      const box=document.createElement('div'); box.className='team-card';
+
+      // Titolo + sottotitolo
+      const title=document.createElement('div'); title.className='title'; title.textContent=d.name||d.id;
+      const sub=document.createElement('div'); sub.className='sub';
+      sub.textContent=`${d.city||''}${d.conference? ' · '+d.conference:''}${d.division? ' · '+d.division:''}`.trim();
+      box.appendChild(title); if(sub.textContent) box.appendChild(sub);
+
+      // Riga info extra
+      const extra=document.createElement('div'); extra.className='extra';
+      const cap=(d.arena_capacity!=null && d.arena_capacity!=='')? ` · cap ${d.arena_capacity}`:'';
+      extra.textContent=`Arena: ${d.arena||'-'}${cap}  |  State: ${d.state||'-'}`;
+      box.appendChild(extra);
+
+      // Roster
+      const rosterWrap = document.createElement('section');
+      rosterWrap.className='roster';
+      const h = document.createElement('h2'); h.className='h2'; h.textContent = `Roster attuale${d.roster_count? ' ('+d.roster_count+')':''}`;
+      rosterWrap.appendChild(h);
+
+      if (Array.isArray(d.roster) && d.roster.length){
+        const list=document.createElement('div'); list.className='roster-list';
+        d.roster.forEach(p=>{
+          const row=document.createElement('div'); row.className='player-row';
+          const a=document.createElement('a'); a.className='link';
+          a.href=(location.protocol==='file:' ? `player.html?id=${encodeURIComponent(p.id)}` : `/player/${encodeURIComponent(p.id)}`);
+          const jersey = p.jersey ? ` #${p.jersey}` : '';
+          const pos = p.position ? ` · ${p.position}` : '';
+          a.textContent=`${p.name || p.id}${pos}${jersey}`;
+          row.appendChild(a);
+          list.appendChild(row);
+        });
+        rosterWrap.appendChild(list);
+      } else {
+        const none=document.createElement('div'); none.className='muted'; none.textContent='Nessun giocatore disponibile.';
+        rosterWrap.appendChild(none);
       }
-      load();
-    </script>
+
+      box.appendChild(rosterWrap);
+      el.innerHTML=''; el.appendChild(box);
+    } catch(e){
+      el.textContent='Error: '+(e.message||e);
+    }
+  }
+  load();
+</script>
+
   </body>
 </html>
 

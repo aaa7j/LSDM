@@ -417,3 +417,33 @@ h1.fade-in{
   .player-avatar { width: 72px; height: 72px; font-size: 28px; border-radius: 14px; }
   .summary-table { grid-template-columns: 84px repeat(10, 60px); }
 }
+
+/* Team page roster */
+.roster-list { display: grid; gap: 6px; margin-top: 4px; }
+.player-row { padding: 8px 10px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; }
+.player-row .link { color: var(--fg); text-decoration: none; }
+.player-row .link:hover { text-decoration: underline; }
+.title { font-size: 22px; font-weight: 900; }
+.sub { color: var(--muted); }
+.extra { color: var(--muted); font-size: 13px; }
+/* --- Team card & roster --- */
+.team-card {
+  display: grid;
+  gap: 10px;
+  background: var(--bg-soft, rgba(255,255,255,0.03));
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+.title { font-size: 22px; font-weight: 900; }
+.sub { color: var(--muted, #9aa8c7); }
+.extra { color: var(--muted, #9aa8c7); font-size: 13px; }
+
+.roster { margin-top: 4px; }
+.h2 { font-size: 16px; margin: 8px 0 6px; font-weight: 700; }
+.roster-list { display: grid; gap: 6px; margin-top: 6px; }
+.player-row { padding: 8px 10px; background: var(--bg-soft, rgba(255,255,255,0.03)); border: 1px solid var(--border, rgba(255,255,255,0.08)); border-radius: 10px; }
+.player-row .link { color: var(--fg, #eaeef6); text-decoration: none; }
+.player-row .link:hover { text-decoration: underline; }
+.muted { opacity: .75; }
