@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -43,6 +44,33 @@ _MEM_TEAMS: List[dict] = []    # list of dicts
 _STANDINGS_CACHE = {}
 _STANDINGS_TTL_SECONDS = int(os.environ.get("STANDINGS_TTL_SECONDS", "600"))
 STANDINGS_CACHE_DIR = os.environ.get("STANDINGS_CACHE_DIR", os.path.join("metadata", "cache", "standings"))
+
+# --- Lightweight in-memory caches to speed up entity endpoints ---
+_ENTITY_CACHE = {}
+_ENTITY_TTL_SECONDS = int(os.environ.get("ENTITY_TTL_SECONDS", "600"))  # 10 minuti
+
+# Preloaded CSV maps (read once at startup)
+_TEAM_DETAILS_BY_ID: Dict[str, dict] = {}
+_TEAM_INFO_BY_ID: Dict[str, dict] = {}
+_TEAM_BASE_BY_ID: Dict[str, dict] = {}
+_TEAM_HISTORY_BY_ID: Dict[str, List[dict]] = {}
+
+def _cache_get(key):
+    try:
+        ts, val = _ENTITY_CACHE.get(key, (0, None))
+        if val is None:
+            return None
+        if (time.time() - float(ts)) <= _ENTITY_TTL_SECONDS:
+            return val
+    except Exception:
+        pass
+    return None
+
+def _cache_put(key, value):
+    try:
+        _ENTITY_CACHE[key] = (time.time(), value)
+    except Exception:
+        pass
 
 def _norm(s: str) -> str:
     import re as _re
@@ -101,6 +129,104 @@ def _build_mem_indexes(spark: SparkSession):
     except Exception as e:
         print(f"[WARN] Could not build _MEM_TEAMS: {e}")
         _MEM_TEAMS = []
+
+# --------------------------
+# Startup helpers: preload CSVs and add GZip
+# --------------------------
+
+def _preload_team_csvs():
+    """Load team CSVs once into in-memory dicts to avoid per-request IO.
+
+    Files (optional): data/team_details.csv, data/team_info_common.csv, data/team.csv, data/team_history.csv
+    Keys normalized as string team id.
+    """
+    import csv, pathlib
+    base = os.environ.get("DATA_DIR", "data")
+    p = pathlib.Path(base)
+    def _read_csv(path: pathlib.Path):
+        if not path.exists():
+            return []
+        try:
+            raw = path.open('r', encoding='utf-8', newline='').read()
+        except Exception:
+            try:
+                raw = path.open('r', encoding='latin-1', newline='').read()
+            except Exception:
+                return []
+        # try to sniff delimiter
+        import io
+        sample = raw[:4096]
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            delim = dialect.delimiter
+        except Exception:
+            delim = ','
+        rows = []
+        reader = csv.DictReader(io.StringIO(raw), delimiter=delim)
+        for r in reader:
+            if r is None:
+                continue
+            # normalize keys
+            rr = {}
+            for k, v in (r.items() if r else []):
+                if k is None:
+                    continue
+                kk = str(k).strip().lower()
+                rr[kk] = (None if v is None else str(v).strip())
+            rows.append(rr)
+        return rows
+
+    def _key_for(row: dict):
+        for k in ("team_id", "teamid", "id", "tid"):
+            if k in row and row[k]:
+                return str(row[k])
+        return None
+
+    # team_details.csv
+    try:
+        rows = _read_csv(p / 'team_details.csv')
+        _TEAM_DETAILS_BY_ID.clear()
+        for r in rows:
+            k = _key_for(r)
+            if not k:
+                continue
+            _TEAM_DETAILS_BY_ID[k] = r
+    except Exception as e:
+        print(f"[WARN] preload team_details.csv: {e}")
+    # team_info_common.csv
+    try:
+        rows = _read_csv(p / 'team_info_common.csv')
+        _TEAM_INFO_BY_ID.clear()
+        for r in rows:
+            k = _key_for(r)
+            if not k:
+                continue
+            _TEAM_INFO_BY_ID[k] = r
+    except Exception as e:
+        print(f"[WARN] preload team_info_common.csv: {e}")
+    # team.csv
+    try:
+        rows = _read_csv(p / 'team.csv')
+        _TEAM_BASE_BY_ID.clear()
+        for r in rows:
+            k = _key_for(r)
+            if not k:
+                continue
+            _TEAM_BASE_BY_ID[k] = r
+    except Exception as e:
+        print(f"[WARN] preload team.csv: {e}")
+    # team_history.csv (list per id)
+    try:
+        rows = _read_csv(p / 'team_history.csv')
+        _TEAM_HISTORY_BY_ID.clear()
+        for r in rows:
+            k = _key_for(r)
+            if not k:
+                continue
+            _TEAM_HISTORY_BY_ID.setdefault(k, []).append(r)
+    except Exception as e:
+        print(f"[WARN] preload team_history.csv: {e}")
+
 
 def _quick_player_summary(spark: SparkSession, pid: int) -> dict:
     """Compute quick scoring summary and basic bio/draft for a single player.
@@ -1556,6 +1682,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+app.add_middleware(GZipMiddleware, minimum_size=512)
+
+# Run small warmups on startup
+@app.on_event("startup")
+def _on_startup():
+    try:
+        _preload_team_csvs()
+    except Exception as e:
+        print(f"[WARN] preload failed: {e}")
 
 # --- Static HTML UI ---
 static_dir = os.path.join(os.getcwd(), "web")
@@ -1696,11 +1831,139 @@ def suggest_matchup(q: str = Query(...), limit: int = Query(10, ge=1, le=30)):
             break
     return {"items": pairs}
 
+@app.get("/entity/head2head")
+def entity_head2head(
+    home: str = Query(..., description="Home team id (string)"),
+    away: str = Query(..., description="Away team id (string)"),
+    page: int = Query(0, ge=0),
+    size: int = Query(5, ge=1, le=50),
+):
+    """Return paginated head-to-head games between two teams.
+
+    Output: { total:int, size:int, items:[{id,date,home,away,home_pts,away_pts}] }
+    """
+    if spark is None:
+        return {"total": 0, "size": size, "items": [], "error": "service starting"}
+    try:
+        try:
+            hid = int(str(home))
+            aid = int(str(away))
+        except Exception:
+            return {"total": 0, "size": size, "items": [], "error": "invalid team ids"}
+
+        gg = spark.table("GLOBAL_GAME").alias("g")
+        base = (
+            gg.select(
+                F.col("game_id").cast("string").alias("gid"),
+                F.col("game_date").cast("date").alias("date"),
+                F.col("home_team_id").cast("int").alias("home_id"),
+                F.col("away_team_id").cast("int").alias("away_id"),
+                F.col("final_score_home").alias("home_pts"),
+                F.col("final_score_away").alias("away_pts"),
+            )
+        )
+        cond = (
+            ((F.col("home_id") == F.lit(hid)) & (F.col("away_id") == F.lit(aid)))
+            | ((F.col("home_id") == F.lit(aid)) & (F.col("away_id") == F.lit(hid)))
+        )
+        h2h = base.where(cond)
+
+        # Aggregate summary (wins, averages) using raw ids
+        a_win = ((F.col("home_id") == F.lit(hid)) & (F.col("home_pts") > F.col("away_pts"))) | ((F.col("away_id") == F.lit(hid)) & (F.col("away_pts") > F.col("home_pts")))
+        b_win = ((F.col("home_id") == F.lit(aid)) & (F.col("home_pts") > F.col("away_pts"))) | ((F.col("away_id") == F.lit(aid)) & (F.col("away_pts") > F.col("home_pts")))
+        a_pts = F.when(F.col("home_id") == F.lit(hid), F.col("home_pts")).otherwise(F.when(F.col("away_id") == F.lit(hid), F.col("away_pts")).otherwise(None))
+        b_pts = F.when(F.col("home_id") == F.lit(aid), F.col("home_pts")).otherwise(F.when(F.col("away_id") == F.lit(aid), F.col("away_pts")).otherwise(None))
+        diff = (a_pts - b_pts)
+        agg = (h2h
+               .agg(
+                   F.count(F.lit(1)).alias("games"),
+                   F.sum(F.when(a_win, F.lit(1)).otherwise(F.lit(0))).cast("int").alias("a_w"),
+                   F.sum(F.when(b_win, F.lit(1)).otherwise(F.lit(0))).cast("int").alias("b_w"),
+                   F.avg(a_pts).alias("a_ppg"),
+                   F.avg(b_pts).alias("b_ppg"),
+                   F.avg(diff).alias("diff_avg"),
+               )
+        )
+        agg_row = agg.collect()[0] if agg.limit(1).count() >= 0 else None
+        summary = {
+            "a_id": hid,
+            "b_id": aid,
+            "games": int(agg_row["games"]) if agg_row and agg_row["games"] is not None else 0,
+            "a_w": int(agg_row["a_w"]) if agg_row and agg_row["a_w"] is not None else 0,
+            "b_w": int(agg_row["b_w"]) if agg_row and agg_row["b_w"] is not None else 0,
+            "a_ppg": float(agg_row["a_ppg"]) if agg_row and agg_row["a_ppg"] is not None else None,
+            "b_ppg": float(agg_row["b_ppg"]) if agg_row and agg_row["b_ppg"] is not None else None,
+            "diff_avg": float(agg_row["diff_avg"]) if agg_row and agg_row["diff_avg"] is not None else None,
+        }
+
+        # Resolve canonical team names for ids
+        a_name = None; b_name = None
+        try:
+            t = spark.table("TEAM_CONFERENCE").select(F.col("team_id").cast("int").alias("id"), F.col("team_name").alias("name"))
+            names = {int(r["id"]): r["name"] for r in t.where(F.col("team_id").cast("int").isin([hid, aid])).collect()}
+            a_name = names.get(hid); b_name = names.get(aid)
+        except Exception:
+            try:
+                t = spark.table("GLOBAL_TEAM").select(F.col("team_id").cast("int").alias("id"), F.col("team_name").alias("name"))
+                names = {int(r["id"]): r["name"] for r in t.where(F.col("team_id").cast("int").isin([hid, aid])).collect()}
+                a_name = names.get(hid); b_name = names.get(aid)
+            except Exception:
+                pass
+        if a_name: summary["a_name"] = a_name
+        if b_name: summary["b_name"] = b_name
+
+        # Resolve team names (TEAM_CONFERENCE preferred)
+        try:
+            tc = spark.table("TEAM_CONFERENCE").alias("t")
+            th = tc.alias("th"); ta = tc.alias("ta")
+            h2h = (h2h
+                   .join(th, h2h["home_id"] == th["team_id"], "left")
+                   .join(ta, h2h["away_id"] == ta["team_id"], "left")
+                   .select(
+                       F.col("gid").alias("id"),
+                       F.col("date").cast("string").alias("date"),
+                       th["team_name"].alias("home"),
+                       ta["team_name"].alias("away"),
+                       F.col("home_pts"),
+                       F.col("away_pts"),
+                   ))
+        except Exception:
+            gt = spark.table("GLOBAL_TEAM").alias("t")
+            th = gt.alias("th"); ta = gt.alias("ta")
+            h2h = (h2h
+                   .join(th, h2h["home_id"] == th["team_id"], "left")
+                   .join(ta, h2h["away_id"] == ta["team_id"], "left")
+                   .select(
+                       F.col("gid").alias("id"),
+                       F.col("date").cast("string").alias("date"),
+                       th["team_name"].alias("home"),
+                       ta["team_name"].alias("away"),
+                       F.col("home_pts"),
+                       F.col("away_pts"),
+                   ))
+
+        from pyspark.sql.window import Window
+        w = Window.orderBy(F.col("date").desc(), F.col("id").desc())
+        h2h = h2h.withColumn("rn", F.row_number().over(w))
+        start = page * size + 1
+        end = (page + 1) * size
+        total = int(h2h.count())
+        page_df = h2h.where((F.col("rn") >= F.lit(start)) & (F.col("rn") <= F.lit(end)))
+        items = [r.asDict(recursive=True) for r in page_df.select("id","date","home","away","home_pts","away_pts").collect()]
+        return {"total": total, "size": int(size), "items": items, "summary": summary}
+    except Exception as e:
+        return {"total": 0, "size": int(size), "items": [], "error": str(e)}
+
 @app.get("/entity/player/{pid}")
 def entity_player(pid: str):
     if spark is None:
         return {"error": "service starting"}
     try:
+        # cache hit
+        ckey = ("player", str(pid))
+        cval = _cache_get(ckey)
+        if cval is not None:
+            return cval
         df = spark.table("GLOBAL_PLAYER")
         row = (df
                .where(F.col("player_id").cast("string") == F.lit(pid))
@@ -1724,7 +1987,9 @@ def entity_player(pid: str):
                 rec["team"] = {"id": rec.get("team_id"), "name": trow[0]["team_name"], "city": trow[0]["team_city"]}
         except Exception:
             pass
-        return {"_entity": "player", **rec}
+        out = {"_entity": "player", **rec}
+        _cache_put(ckey, out)
+        return out
     except Exception as e:
         return {"error": str(e)}
 
@@ -1738,6 +2003,11 @@ def player_summary(pid: str):
     except Exception:
         return {"error": "invalid player id"}
     try:
+        # cache hit
+        ckey = ("player_summary", str(pid))
+        cval = _cache_get(ckey)
+        if cval is not None:
+            return cval
         # Prefer precomputed last season stats if available
         tables = {t.name.upper() for t in spark.catalog.listTables()}
         if "GLOBAL_PLAYER_LAST_SEASON" in tables:
@@ -1792,6 +2062,7 @@ def player_summary(pid: str):
                         pass
                 except Exception:
                     pass
+                _cache_put(ckey, out)
                 return out
             # fall through to resilient computation
         # Fast path: pre-aggregated table
@@ -1839,9 +2110,11 @@ def player_summary(pid: str):
                     pass
             except Exception:
                 pass
+            _cache_put(ckey, out)
             return out
         # Fallback: compute quick summary on-the-fly
         out = _quick_player_summary(spark, pid_int)
+        _cache_put(ckey, out)
         return out
     except Exception as e:
         return {"error": str(e)}
@@ -2319,12 +2592,29 @@ def debug_pbp_check(pid: str):
 
 @app.get("/entity/team/{tid}")
 def entity_team(tid: str):
+    """
+    Dettagli squadra + roster.
+    Priorità sorgenti:
+      - GLOBAL_TEAM
+      - TEAM_INFO_COMMON / TEAM_DETAILS / GLOBAL_TEAM_DETAILS (se registrate)
+      - TEAM_CONFERENCE (per East/West)
+      - CSV team_info_common / team_details (fallback, robusto a Windows e delimitatori)
+      - TEAM_ARENA_RESOLVED (arena/capacity centralizzate)
+      - GLOBAL_PLAYER -> COMMON_PLAYER_INFO (roster)
+    """
     import os
+    import pathlib
     from pyspark.sql import functions as F
 
-    # utility locali
+    # quick in-memory cache hit
+    ckey = ("team", str(tid))
+    cached = _cache_get(ckey)
+    if cached is not None:
+        return cached
+
     DATA_DIR = os.getenv("DATA_DIR", "data")
 
+    # ----------------------- helper -----------------------
     def _table_exists(name: str) -> bool:
         try:
             spark.table(name).limit(1).collect()
@@ -2333,15 +2623,36 @@ def entity_team(tid: str):
             return False
 
     def _read_csv_local(name: str):
-        path = os.path.join(DATA_DIR, f"{name}.csv")
-        try:
-            df = (spark.read.option("header", True).option("inferSchema", True).csv(path))
-            # normalizza colonne
-            for c in df.columns:
-                df = df.withColumnRenamed(c, c.strip().lower())
-            return df
-        except Exception:
+        """
+        Legge data/<name>.csv in modo robusto (Windows-friendly):
+        - risolve in file:/// URI
+        - prova delimitatori ',', ';', '\\t'
+        - header + inferSchema + multiline + escape
+        - normalizza i nomi colonna a lowercase + strip
+        """
+        p = pathlib.Path(DATA_DIR).resolve() / f"{name}.csv"
+        if not p.exists():
             return None
+        uri = p.as_uri()
+        for delim in [",", ";", "\t"]:
+            try:
+                df = (
+                    spark.read.format("csv")
+                    .option("header", True)
+                    .option("inferSchema", True)
+                    .option("multiLine", True)
+                    .option("escape", '"')
+                    .option("delimiter", delim)
+                    .load(uri)
+                )
+                if not df.columns:
+                    continue
+                for c in df.columns:
+                    df = df.withColumnRenamed(c, c.strip().lower())
+                return df
+            except Exception:
+                continue
+        return None
 
     def _pick_key(df):
         for k in ("team_id", "teamid", "tid"):
@@ -2349,25 +2660,21 @@ def entity_team(tid: str):
                 return k
         return None
 
-    # --- NUOVO: helper per scegliere la prima colonna disponibile e rinominarla ---
     def _first_col(df, *cands):
         cols = set(df.columns)
         for c in cands:
             if c in cols:
-                from pyspark.sql import functions as F
                 return F.col(c)
         return None
 
     def _select_team_info(df):
         """
-        Restituisce una select con alias "canonici" (city/state/arena/arena_capacity/conference/division)
-        pescando dai nomi effettivi del DF (es. team_city, arena_name, ecc.).
+        Seleziona con alias canonici, mappando varianti frequenti.
         """
-        from pyspark.sql import functions as F
         cols = []
         c_city   = _first_col(df, "city", "team_city", "teamcity")
-        c_state  = _first_col(df, "state", "team_state", "teamstate")
-        c_arena  = _first_col(df, "arena", "arena_name", "stadium", "arena_name_text")
+        c_state  = _first_col(df, "state", "team_state", "teamstate", "us_state", "state_code", "st_abbrev")
+        c_arena  = _first_col(df, "arena", "arena_name", "home_venue", "venue", "stadium", "arena_full_name", "arena_name_text", "home_arena")
         c_acap   = _first_col(df, "arena_capacity", "capacity", "arena_cap", "arena_capacity_text")
         c_conf   = _first_col(df, "conference", "team_conference", "conf")
         c_div    = _first_col(df, "division", "team_division", "div")
@@ -2379,86 +2686,215 @@ def entity_team(tid: str):
         if c_conf  is not None: cols.append(c_conf.alias("conference"))
         if c_div   is not None: cols.append(c_div.alias("division"))
 
-        # se nessuna delle colonne è presente, selezioniamo una sola costante per evitare select([]) che esplode
         if not cols:
             cols = [F.lit(None).alias("city")]
         return df.select(*cols)
 
-    # --- base: GLOBAL_TEAM ---
-    rec = {"_entity":"team","id": str(tid), "name": None, "city": None, "state": None,
-           "conference": None, "division": None, "arena": None, "arena_capacity": None}
+    def _select_arena_only(df):
+        c_arena = _first_col(df, "arena", "arena_name", "home_venue", "venue", "stadium", "arena_full_name", "arena_text", "home_arena")
+        return df.select(c_arena.alias("arena")) if c_arena is not None else None
 
+    def _clean(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s if s and s.lower() not in ("null", "none", "nan", "-") else None
+
+    # ----------------------- record base -----------------------
+    rec = {
+        "_entity": "team",
+        "id": str(tid),
+        "name": None,
+        "city": None,
+        "state": None,
+        "conference": None,
+        "division": None,
+        "arena": None,
+        "arena_capacity": None,
+        # extra details
+        "full_name": None,
+        "abbreviation": None,
+        "nickname": None,
+        "year_founded": None,
+        "owner": None,
+        "general_manager": None,
+        "head_coach": None,
+        "dleague_affiliation": None,
+        "facebook": None,
+        "instagram": None,
+        "twitter": None,
+        # historical names timeline
+        "history_names": None,
+    }
+
+    # 1) GLOBAL_TEAM
     try:
         g = spark.table("GLOBAL_TEAM").alias("g")
-        row = (g.where(F.col("g.team_id").cast("string") == F.lit(tid))
-                 .select(
-                    F.col("g.team_id").cast("string").alias("id"),
-                    F.col("g.team_name").alias("name"),
-                    F.col("g.city").alias("city"),
-                    F.col("g.state").alias("state"),
-                    F.col("g.conference").alias("conference"),
-                    F.col("g.division").alias("division"),
-                    F.col("g.arena").alias("arena")
-                 ).limit(1).collect())
+        row = (
+            g.where(F.col("g.team_id").cast("string") == F.lit(tid))
+             .select(
+                 F.col("g.team_id").cast("string").alias("id"),
+                 F.col("g.team_name").alias("name"),
+                 F.col("g.city").alias("city"),
+                 # molti dump non hanno state in GLOBAL_TEAM
+                 F.col("g.state").alias("state") if "state" in g.columns else F.lit(None).alias("state"),
+                 F.col("g.conference").alias("conference") if "conference" in g.columns else F.lit(None).alias("conference"),
+                 F.col("g.division").alias("division") if "division" in g.columns else F.lit(None).alias("division"),
+                 F.col("g.arena").alias("arena") if "arena" in g.columns else F.lit(None).alias("arena"),
+             )
+             .limit(1).collect()
+        )
         if row:
             rec.update(row[0].asDict(recursive=True))
     except Exception:
         pass
 
-    # --- enrich da TEAM_INFO_COMMON / TEAM_DETAILS se esistono ---
+    # 2) TEAM_INFO_COMMON / TEAM_DETAILS / GLOBAL_TEAM_DETAILS
     for tname in ("TEAM_INFO_COMMON", "TEAM_DETAILS", "GLOBAL_TEAM_DETAILS"):
         if not _table_exists(tname):
             continue
         tdf = spark.table(tname)
+        # normalizza nomi colonna in minuscolo per compatibilità
+        for c in tdf.columns:
+            if c != c.strip().lower():
+                tdf = tdf.withColumnRenamed(c, c.strip().lower())
         key = _pick_key(tdf)
         if not key:
             continue
-        add = (_select_team_info(
-          tdf.where(F.col(key).cast("string")==F.lit(tid))
-        ).limit(1).collect())
+        add = (
+            _select_team_info(
+                tdf.where(F.col(key).cast("string") == F.lit(tid))
+            )
+            .limit(1)
+            .collect()
+        )
         if add:
             dd = add[0].asDict(recursive=True)
-            rec["city"]            = rec["city"] or dd.get("city")
-            rec["state"]           = rec["state"] or dd.get("state")
-            rec["arena"]           = rec["arena"] or dd.get("arena") or dd.get("arena_name")
-            rec["arena_capacity"]  = rec["arena_capacity"] or dd.get("arena_capacity")
-            rec["conference"]      = rec["conference"] or dd.get("conference")
-            rec["division"]        = rec["division"] or dd.get("division")
+            rec["city"]           = rec["city"] or dd.get("city")
+            rec["state"]          = rec["state"] or dd.get("state")
+            rec["arena"]          = rec["arena"] or dd.get("arena")
+            rec["arena_capacity"] = rec["arena_capacity"] or dd.get("arena_capacity")
+            rec["conference"]     = rec["conference"] or dd.get("conference")
+            rec["division"]       = rec["division"] or dd.get("division")
 
-    # --- fallback CSV se ancora mancano campi ---
-    if (not rec.get("arena")) or (not rec.get("state")) or (rec.get("arena_capacity") in (None, "", "null")):
-        for fname in ("team_info_common", "team_details"):
-            df = _read_csv_local(fname)
-            if df is None:
-                continue
-            key = _pick_key(df)
-            if not key:
-                continue
-            rows = (_select_team_info(
-                df.where(F.col(key).cast("string")==F.lit(tid))
-            ).limit(1).collect())
-            if rows:
-                x = rows[0].asDict(recursive=True)
-                rec["city"]            = rec["city"] or x.get("city")
-                rec["state"]           = rec["state"] or x.get("state")
-                rec["arena"]           = rec["arena"] or x.get("arena") or x.get("arena_name")
-                rec["arena_capacity"]  = rec["arena_capacity"] or x.get("arena_capacity")
-                rec["conference"]      = rec["conference"] or x.get("conference")
-                rec["division"]        = rec["division"] or x.get("division")
+    # 3) TEAM_CONFERENCE (East/West affidabile)
+    try:
+        if _table_exists("TEAM_CONFERENCE") and not rec.get("conference"):
+            tc = spark.table("TEAM_CONFERENCE").alias("tc")
+            crow = (
+                tc.where(F.col("tc.team_id").cast("string") == F.lit(tid))
+                  .select(F.col("tc.conference").alias("conference"))
+                  .limit(1).collect()
+            )
+            if crow:
+                crec = crow[0].asDict(recursive=True)
+                if crec.get("conference"):
+                    rec["conference"] = crec["conference"]
+    except Exception:
+        pass
 
-    # --- roster: GLOBAL_PLAYER → fallback CSV common_player_info ---
+    # 4) CSV enrichment from preloaded dicts (no per-request IO)
+    try:
+        tid_key = str(tid)
+        ii = _TEAM_INFO_BY_ID.get(tid_key) or {}
+        td = _TEAM_DETAILS_BY_ID.get(tid_key) or {}
+        tb = _TEAM_BASE_BY_ID.get(tid_key) or {}
+        # map common fields
+        rec["city"]           = rec.get("city") or ii.get("team_city") or td.get("city") or tb.get("city")
+        rec["arena"]          = rec.get("arena") or td.get("arena")
+        rec["arena_capacity"] = rec.get("arena_capacity") or td.get("arenacapacity") or td.get("arena_capacity")
+        rec["conference"]     = rec.get("conference") or ii.get("team_conference") or td.get("conference")
+        rec["division"]       = rec.get("division") or ii.get("team_division") or td.get("division")
+        # extras
+        rec["full_name"]      = rec.get("full_name") or tb.get("full_name")
+        rec["abbreviation"]   = rec.get("abbreviation") or tb.get("abbreviation") or td.get("abbreviation")
+        rec["nickname"]       = rec.get("nickname") or tb.get("nickname") or td.get("nickname")
+        yf = td.get("yearfounded") or tb.get("year_founded") or tb.get("yearfounded")
+        if rec.get("year_founded") is None and yf:
+            try:
+                ys = str(yf).strip()
+                if ys.endswith('.0'): ys = ys[:-2]
+                if ys.isdigit(): rec["year_founded"] = int(ys)
+            except Exception:
+                pass
+        for k_src, k_dst in (
+            ("owner", "owner"), ("generalmanager","general_manager"), ("headcoach","head_coach"), ("dleagueaffiliation","dleague_affiliation"),
+            ("facebook","facebook"), ("instagram","instagram"), ("twitter","twitter")
+        ):
+            if not rec.get(k_dst) and td.get(k_src):
+                rec[k_dst] = td.get(k_src)
+        # history
+        hist_raw = _TEAM_HISTORY_BY_ID.get(tid_key) or []
+        if hist_raw:
+            hist = []
+            for r in hist_raw:
+                item = {
+                    "city": r.get("city"),
+                    "nickname": r.get("nickname"),
+                }
+                for kk_src, kk_dst in (("year_founded","from"),("yearfounded","from"),("year_active_till","to"),("year_active_to","to")):
+                    vv = r.get(kk_src)
+                    if vv:
+                        try:
+                            sv = str(vv).strip()
+                            if sv.endswith('.0'): sv = sv[:-2]
+                            if sv.isdigit(): item[kk_dst] = int(sv)
+                            else: item[kk_dst] = sv
+                        except Exception:
+                            item[kk_dst] = vv
+                hist.append(item)
+            try:
+                hist.sort(key=lambda x: (x.get("from") or 0, str(x.get("city") or "")))
+            except Exception:
+                pass
+            rec["history_names"] = hist
+    except Exception:
+        pass
+
+    # extra: if still no arena try team.csv arena-like columns
+    if not rec.get("arena"):
+        tdf2 = _read_csv_local("team")
+        if tdf2 is not None:
+            key2 = _pick_key(tdf2)
+            if key2:
+                sel = _select_arena_only(tdf2.where(F.col(key2).cast("string") == F.lit(tid)))
+                if sel is not None:
+                    r = sel.limit(1).collect()
+                    if r:
+                        rec["arena"] = rec["arena"] or r[0].asDict(recursive=True).get("arena")
+
+    # 5) TEAM_ARENA_RESOLVED (se c'è, ha priorità su arena/capacity)
+    try:
+        if _table_exists("TEAM_ARENA_RESOLVED"):
+            tar = spark.table("TEAM_ARENA_RESOLVED")
+            row = (
+                tar.where(F.col("team_id").cast("string") == F.lit(str(tid)))
+                   .select("arena", "arena_capacity")
+                   .limit(1).collect()
+            )
+            if row:
+                rr = row[0].asDict(recursive=True)
+                rec["arena"] = rec.get("arena") or rr.get("arena")
+                rec["arena_capacity"] = rec.get("arena_capacity") or rr.get("arena_capacity")
+    except Exception:
+        pass
+
+    # 6) roster
     roster = []
     try:
         if _table_exists("GLOBAL_PLAYER"):
             gp = spark.table("GLOBAL_PLAYER")
-            rows = (gp.where(F.col("team_id").cast("string")==F.lit(tid))
-                      .select(
-                        F.col("player_id").cast("string").alias("id"),
-                        F.col("full_name").alias("name"),
-                        F.col("position"),
-                        F.col("jersey_number").alias("jersey"))
-                      .orderBy(F.col("name").asc())
-                      .collect())
+            rows = (
+                gp.where(F.col("team_id").cast("string") == F.lit(tid))
+                  .select(
+                      F.col("player_id").cast("string").alias("id"),
+                      F.col("full_name").alias("name"),
+                      F.col("position"),
+                      F.col("jersey_number").alias("jersey"),
+                  )
+                  .orderBy(F.col("name").asc())
+                  .collect()
+            )
             roster = [r.asDict(recursive=True) for r in rows]
     except Exception:
         pass
@@ -2467,15 +2903,15 @@ def entity_team(tid: str):
         cpi = _read_csv_local("common_player_info")
         if cpi is not None:
             cols = set(cpi.columns)
-            pid = "player_id" if "player_id" in cols else ("person_id" if "person_id" in cols else None)
+            pid  = "player_id" if "player_id" in cols else ("person_id" if "person_id" in cols else None)
             name = "display_first_last" if "display_first_last" in cols else ("display_name" if "display_name" in cols else None)
-            key = _pick_key(cpi)
+            key  = _pick_key(cpi)
             if pid and name and key:
-                dfp = cpi.where(F.col(key).cast("string")==F.lit(tid))
+                dfp = cpi.where(F.col(key).cast("string") == F.lit(tid))
                 if "is_active" in cols:
-                    dfp = dfp.where(F.col("is_active")==1)
+                    dfp = dfp.where(F.col("is_active") == 1)
                 elif "rosterstatus" in cols:
-                    dfp = dfp.where(F.lower(F.col("rosterstatus"))==F.lit("active"))
+                    dfp = dfp.where(F.lower(F.col("rosterstatus")) == F.lit("active"))
                 sel = [pid, name] + (["position"] if "position" in cols else []) + (["jersey_number"] if "jersey_number" in cols else [])
                 rows = dfp.select(*sel).orderBy(F.col(name).asc()).collect()
                 for r in rows:
@@ -2484,25 +2920,45 @@ def entity_team(tid: str):
                         "id": str(rr.get(pid)),
                         "name": rr.get(name),
                         "position": rr.get("position") if "position" in sel else None,
-                        "jersey": rr.get("jersey_number") if "jersey_number" in sel else None
+                        "jersey": rr.get("jersey_number") if "jersey_number" in sel else None,
                     })
 
+    # ordina roster per ruolo → nome
+    order = {"G": 0, "G-F": 1, "F-G": 2, "F": 3, "F-C": 4, "C-F": 5, "C": 6}
+    roster = sorted(roster, key=lambda x: (order.get((x.get("position") or "").upper(), 99), (x.get("name") or "").lower()))
     rec["roster"] = roster
     rec["roster_count"] = len(roster)
 
-    # cleanup stringhe vuote
-    def _clean(v):
-        if v is None: return None
-        s = str(v).strip()
-        return s if s and s.lower() not in ("null","none","nan") else None
-
+    # cleanup e cast finali
     rec["arena"] = _clean(rec.get("arena"))
     rec["state"] = _clean(rec.get("state"))
     rec["arena_capacity"] = _clean(rec.get("arena_capacity"))
+    # normalize strings for extras
+    for fld in ("full_name","abbreviation","nickname","owner","general_manager","head_coach","dleague_affiliation"):
+        if rec.get(fld):
+            rec[fld] = _clean(rec.get(fld))
+    try:
+        if rec.get("arena_capacity") not in (None, ""):
+            cap = str(rec["arena_capacity"]).strip().replace(",", "")
+            if cap.isdigit():
+                rec["arena_capacity"] = int(cap)
+    except Exception:
+        pass
 
+    # normalize year_founded
+    try:
+        y = rec.get("year_founded")
+        if y is not None and not isinstance(y, int):
+            ys = str(y).strip()
+            if ys.endswith(".0"): ys = ys[:-2]
+            if ys.isdigit():
+                rec["year_founded"] = int(ys)
+    except Exception:
+        pass
+
+    # cache result
+    _cache_put(ckey, rec)
     return rec
-
-
 
 @app.get("/entity/game/{gid}")
 def entity_game(gid: str, page: int = Query(0, ge=0), size: int = Query(5, ge=1, le=50)):

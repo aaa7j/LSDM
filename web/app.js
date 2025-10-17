@@ -7,9 +7,10 @@ function highlight(text, query) {
   return (text + '').replace(re, '<mark>$1</mark>');
 }
 
-function setLoading(el, on) {
+function setLoading(el, on, text) {
   if (!el) return;
-  el.innerHTML = on ? '<span class="spinner"></span> Searching…' : '';
+  const msg = (typeof text === 'string' && text) ? text : 'Searching…';
+  el.innerHTML = on ? '<span class="spinner"></span> ' + msg : '';
 }
 
 // Button ripple (small touch)
@@ -29,4 +30,3 @@ document.addEventListener('click', (e) => {
   btn.appendChild(ripple);
   setTimeout(() => ripple.remove(), 280);
 }, true);
-

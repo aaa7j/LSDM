@@ -11,6 +11,7 @@
     <div class="wrap">
       <div id="head" class="card" style="display:grid; gap:6px; align-items:flex-start;"></div>
       <div id="h2h" class="card" style="margin-top:12px; display:grid; gap:8px;"></div>
+      <footer style="margin: 28px 0; color: var(--muted); font-size: 12px;">Minimal UI. Results powered by the local FastAPI service.</footer>
     </div>
     <script src="/static/app.js"></script>
     <script>
@@ -32,7 +33,8 @@
         const { id, page, size } = getParams();
         const head = document.getElementById('head');
         const h2h = document.getElementById('h2h');
-        head.innerHTML = 'Loading...'; h2h.innerHTML='';
+        if (window.setLoading) setLoading(head, true, 'Loading…'); else head.innerHTML = 'Loading...';
+        h2h.innerHTML='';
         if(!id){ head.textContent = 'Missing game id'; return; }
         try{
           const res = await fetch(`/entity/game/${encodeURIComponent(id)}?page=${page}&size=${size}`);
@@ -40,7 +42,7 @@
           const d = await res.json();
           if(d.error){ head.textContent = d.error; return; }
           // Headline / scoreboard
-          head.innerHTML='';
+          head.innerHTML=''; if (window.setLoading) setLoading(head, false);
           const title = el('div','title', `${d.home || d.home_id} vs ${d.away || d.away_id}`);
           const sub = el('div','sub', `${d.date || ''}${d.location? ' · '+d.location: ''}${d.attendance? ' · attendance '+d.attendance: ''}`);
           const score = el('div','title', `${(d.home_pts??'-')} - ${(d.away_pts??'-')}`);

@@ -41,27 +41,7 @@
           if(!res.ok) throw new Error('HTTP '+res.status);
           const d = await res.json();
           if(d.error){ head.textContent = d.error; return; }
-          const an = (d.summary && d.summary.a_name) ? d.summary.a_name : ids.home;
-          const bn = (d.summary && d.summary.b_name) ? d.summary.b_name : ids.away;
-          head.textContent = `Head-to-head: ${an} vs ${bn}`;
-
-          // Summary card (overall)
-          if (d.summary){
-            const s = d.summary;
-            const sum = document.createElement('div'); sum.className='card'; sum.style.display='grid'; sum.style.gap='6px';
-            const t = document.createElement('div'); t.className='title'; t.textContent='Summary'; sum.appendChild(t);
-            const sub = document.createElement('div'); sub.className='sub';
-            const wl = `${s.a_w ?? 0}-${s.b_w ?? 0}`;
-            const diff = (typeof s.diff_avg === 'number') ? (Math.round(s.diff_avg*10)/10).toFixed(1) : '-';
-            sub.textContent = `Games: ${s.games ?? 0}  |  W-L: ${wl}  |  Avg diff: ${diff}`;
-            sum.appendChild(sub);
-            const ppg = document.createElement('div'); ppg.className='sub';
-            const a_ppg = (typeof s.a_ppg === 'number') ? (Math.round(s.a_ppg*10)/10).toFixed(1) : '-';
-            const b_ppg = (typeof s.b_ppg === 'number') ? (Math.round(s.b_ppg*10)/10).toFixed(1) : '-';
-            ppg.textContent = `PPG: ${an} ${a_ppg} · ${bn} ${b_ppg}`;
-            sum.appendChild(ppg);
-            list.appendChild(sum);
-          }
+          head.textContent = `Head-to-head: ${ids.home} vs ${ids.away}`;
           const nav = document.createElement('div'); nav.style.display='flex'; nav.style.justifyContent='space-between';
           const left = document.createElement('button'); left.className='btn secondary'; left.textContent='◀'; left.disabled = page<=0; left.onclick=()=>navTo(Math.max(0,page-1));
           const right = document.createElement('button'); right.className='btn secondary'; right.textContent='▶';
@@ -81,5 +61,6 @@
     </script>
   </body>
   </html>
+
 
 

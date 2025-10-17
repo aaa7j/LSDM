@@ -44,24 +44,60 @@ def _ensure_windows_env(java_home_override: str | None = None):
         "pyspark-shell"
     )
 
-# ----------------------- Register support temp views ------------------------ #
+# ----------------------- IO helpers ------------------------ #
 from pyspark.sql import functions as F  # noqa: F401
 
-def _read_parquet_if_exists(spark, path: str):
+def _read_parquet_if_exists(spark, path: str | pathlib.Path | None):
+    import traceback
     try:
-        return spark.read.parquet(path)
-    except Exception:
+        if not path:
+            return None
+        p = pathlib.Path(path).resolve()
+        if not p.exists():
+            return None
+        return spark.read.parquet(p.as_uri())
+    except Exception as e:
+        print(f"[boot][PARQUET READ FAIL] {path} -> {e}")
+        traceback.print_exc()
         return None
 
-def _read_csv_if_exists(spark, path: str):
+def _read_csv_if_exists(spark, path: str | pathlib.Path | None):
+    """
+    CSV reader robusto:
+    - Risolve in URI file:///
+    - Prova delimitatori comuni (',' ';' '\\t')
+    - Normalizza i nomi colonna a lower()
+    """
+    import traceback
     try:
-        return (
-            spark.read
-            .option("header", True)
-            .option("inferSchema", True)
-            .csv(path)
-        )
-    except Exception:
+        if not path:
+            return None
+        p = pathlib.Path(path).resolve()
+        if not p.exists():
+            return None
+        uri = p.as_uri()
+        for delim in [",", ";", "\t"]:
+            try:
+                df = (spark.read.format("csv")
+                      .option("header", True)
+                      .option("inferSchema", True)
+                      .option("multiLine", True)
+                      .option("escape", '"')
+                      .option("delimiter", delim)
+                      .load(uri))
+                if not df.columns:
+                    continue
+                for c in df.columns:
+                    df = df.withColumnRenamed(c, c.strip().lower())
+                return df
+            except Exception as e2:
+                print(f"[boot][CSV READ TRY delim='{delim}'] {path} -> {e2}")
+                continue
+        print(f"[boot][CSV READ FAIL] Nessun delimitatore ha funzionato per: {path}")
+        return None
+    except Exception as e:
+        print(f"[boot][CSV READ FAIL] {path} -> {e}")
+        traceback.print_exc()
         return None
 
 def _normalize_columns(df):
@@ -69,7 +105,7 @@ def _normalize_columns(df):
         df = df.withColumnRenamed(c, c.strip().lower())
     return df
 
-def _candidate_dirs(base: str):
+def _candidate_dirs(base: str | pathlib.Path):
     script_dir = pathlib.Path(__file__).resolve().parent
     root = script_dir.parent
     p = pathlib.Path(base)
@@ -89,6 +125,7 @@ def _first_existing(base_dirs, patterns):
                     return str(pathlib.Path(p).resolve())
     return None
 
+# ----------------------- Register support temp views ------------------------ #
 def register_team_support_views(spark, warehouse="warehouse", data_dir="data"):
     """Create temp views TEAM_INFO_COMMON, TEAM_DETAILS/GLOBAL_TEAM_DETAILS, COMMON_PLAYER_INFO, GLOBAL_PLAYER."""
     wdirs = _candidate_dirs(warehouse)
@@ -99,7 +136,7 @@ def register_team_support_views(spark, warehouse="warehouse", data_dir="data"):
     pq_team_det  = _first_existing(wdirs, ["team_details", "team_details/*", "global_team_details", "global_team_details/*"])
     pq_gplayer   = _first_existing(wdirs, ["global_player", "global_player/*"])
 
-    # csv files (match anche case-insensitive/pattern)
+    # csv files
     csv_team_info = _first_existing(ddirs, ["team_info_common.csv", "*team*info*common*.csv"])
     csv_team_det  = _first_existing(ddirs, ["team_details.csv", "*team*details*.csv"])
     csv_cpi       = _first_existing(ddirs, ["common_player_info.csv", "*common*player*info*.csv"])
@@ -139,6 +176,148 @@ def register_team_support_views(spark, warehouse="warehouse", data_dir="data"):
           "[COMMON_PLAYER_INFO]", bool(cpi is not None),
           "[GLOBAL_PLAYER]", bool(gp is not None))
 
+# ----------------------- Build TEAM_ARENA_RESOLVED ------------------------ #
+from pyspark.sql import Window
+
+def build_team_arena_resolved(spark, data_dir: str = "data"):
+    """
+    Costruisce TEAM_ARENA_RESOLVED unendo fonti se presenti (GLOBAL_TEAM, TEAM_DETAILS,
+    TEAM_INFO_COMMON, GLOBAL_GAME) e applicando COALESCE in ordine di priorità.
+    Tutto è condizionale: nessun riferimento a colonne mancanti.
+    """
+    def _exists(name: str) -> bool:
+        try:
+            spark.table(name).limit(1).collect()
+            return True
+        except Exception:
+            return False
+
+    def _read_csv(name: str):
+        p = pathlib.Path(data_dir).resolve() / f"{name}.csv"
+        return _read_csv_if_exists(spark, p)
+
+    # ----------- Caricamento sorgenti (tutte opzionali) -----------
+    gt = None
+    try:
+        if _exists("GLOBAL_TEAM"):
+            gt0 = _normalize_columns(spark.table("GLOBAL_TEAM"))
+            if {"team_id", "arena"} <= set(gt0.columns):
+                gt = gt0.select(
+                    F.col("team_id").cast("string").alias("team_id"),
+                    F.col("arena").alias("arena_gt")
+                )
+    except Exception:
+        gt = None
+
+    # TEAM_DETAILS (con varianti nomi colonna)
+    td = None
+    try:
+        base = None
+        if _exists("TEAM_DETAILS"):
+            base = _normalize_columns(spark.table("TEAM_DETAILS"))
+        elif _exists("GLOBAL_TEAM_DETAILS"):
+            base = _normalize_columns(spark.table("GLOBAL_TEAM_DETAILS"))
+        if base is None:
+            base = _read_csv("team_details")
+
+        if base is not None:
+            cols = set(base.columns)
+            tid_col = next((k for k in ("team_id", "teamid", "tid") if k in cols), None)
+            a_col   = next((k for k in ("arena", "arena_name", "venue", "stadium", "arena_full_name") if k in cols), None)
+            cap_col = next((k for k in ("arena_capacity", "arenacapacity", "capacity", "arena_cap") if k in cols), None)
+            if tid_col and a_col:
+                td = base.select(
+                    F.col(tid_col).cast("string").alias("team_id"),
+                    F.col(a_col).alias("arena_td"),
+                    (F.col(cap_col) if cap_col else F.lit(None)).alias("arena_capacity_td")
+                )
+    except Exception:
+        td = None
+
+    # TEAM_INFO_COMMON
+    tic = None
+    try:
+        base = _normalize_columns(spark.table("TEAM_INFO_COMMON")) if _exists("TEAM_INFO_COMMON") else _read_csv("team_info_common")
+        if base is not None:
+            cols = set(base.columns)
+            tid_col = next((k for k in ("team_id", "teamid", "tid") if k in cols), None)
+            a_col   = next((k for k in ("arena", "arena_name", "venue", "stadium", "home_arena", "arena_full_name") if k in cols), None)
+            cap_col = next((k for k in ("arena_capacity", "arenacapacity", "capacity", "arena_cap") if k in cols), None)
+            if tid_col and a_col:
+                tic = base.select(
+                    F.col(tid_col).cast("string").alias("team_id"),
+                    F.col(a_col).alias("arena_tic"),
+                    (F.col(cap_col) if cap_col else F.lit(None)).alias("arena_capacity_tic")
+                )
+    except Exception:
+        tic = None
+
+    # GLOBAL_GAME → arena più frequente in casa
+    gg_mode = None
+    try:
+        if _exists("GLOBAL_GAME"):
+            g0 = _normalize_columns(spark.table("GLOBAL_GAME"))
+            cols = set(g0.columns)
+            home_k  = next((k for k in ("home_team_id", "team_id_home", "homeid", "home_teamid", "team_home_id") if k in cols), None)
+            arena_k = next((k for k in ("arena", "arena_name", "venue", "stadium", "arena_full_name") if k in cols), None)
+            if home_k and arena_k:
+                agg = (g0
+                    .select(F.col(home_k).cast("string").alias("team_id"), F.col(arena_k).alias("arena"))
+                    .groupBy("team_id", "arena").count())
+                w = Window.partitionBy("team_id").orderBy(F.col("count").desc(), F.col("arena").asc())
+                gg_mode = (agg
+                    .withColumn("rn", F.row_number().over(w))
+                    .where(F.col("rn") == 1)
+                    .select(F.col("team_id"), F.col("arena").alias("arena_gg")))
+    except Exception:
+        gg_mode = None
+
+    # ----------- Base team_id -----------
+    bases = [df.select("team_id") for df in (gt, td, tic, gg_mode) if df is not None]
+    if not bases:
+        spark.createDataFrame([], "team_id string, arena string, arena_capacity string") \
+             .createOrReplaceTempView("TEAM_ARENA_RESOLVED")
+        print("[build] TEAM_ARENA_RESOLVED -> EMPTY (no sources)")
+        return
+
+    base = bases[0]
+    for b in bases[1:]:
+        base = base.unionByName(b, allowMissingColumns=True)
+    base = base.dropDuplicates(["team_id"])
+
+    # ----------- Join incrementali -----------
+    res = base
+    if gt is not None:
+        res = res.join(gt, "team_id", "left")
+    if td is not None:
+        res = res.join(td, "team_id", "left")
+    if tic is not None:
+        res = res.join(tic, "team_id", "left")
+    if gg_mode is not None:
+        res = res.join(gg_mode, "team_id", "left")
+
+    # ----------- Selezione finale (solo colonne esistenti) -----------
+    res_cols = set(res.columns)
+
+    def _coalesce_existing(candidates: list[str]):
+        exprs = [F.col(c) for c in candidates if c in res_cols]
+        return F.coalesce(*exprs) if exprs else F.lit(None)
+
+    arena_expr = _coalesce_existing(["arena_gt", "arena_td", "arena_tic", "arena_gg"]).cast("string")
+    cap_expr   = _coalesce_existing(["arena_capacity_td", "arena_capacity_tic"]).cast("string")
+
+    res = res.select(
+        F.col("team_id"),
+        arena_expr.alias("arena"),
+        cap_expr.alias("arena_capacity"),
+    ).dropDuplicates(["team_id"])
+
+    # Materializza/cacha per velocizzare query successive
+    res = res.cache()
+    rows = res.count()
+    res.createOrReplaceTempView("TEAM_ARENA_RESOLVED")
+    print(f"[build] TEAM_ARENA_RESOLVED OK. rows={rows}")
+
 # ---------------------------------- main ----------------------------------- #
 def main():
     parser = argparse.ArgumentParser(description="Start the NBA search FastAPI service (single Spark session)")
@@ -159,18 +338,27 @@ def main():
     _ensure_windows_env(args.java_home)
     os.environ.setdefault("WAREHOUSE_DIR", args.warehouse)
     os.environ.setdefault("DATA_DIR", args.data_dir)
-    # Ensure PySpark uses the same interpreter as the driver/venv
     try:
         os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
         os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
     except Exception:
         pass
 
-    # Import after env is ready so Spark picks up config; also fetch spark instance
-    from scripts.search_service import app, spark  # noqa: WPS433
+    # Import app module and ensure shared SparkSession
+    import scripts.search_service as svc
+    app = svc.app
 
-    # Register supporting temp views (so /entity/team/{tid} can read arena/state/roster)
-    register_team_support_views(spark, warehouse=args.warehouse, data_dir=args.data_dir)
+    from pyspark.sql import SparkSession
+    s = getattr(svc, "spark", None) or SparkSession.getActiveSession()
+    if s is None:
+        s = (SparkSession.builder
+                .appName("nba-search-service")
+                .getOrCreate())
+    svc.spark = s
+
+    # Views di supporto + TEAM_ARENA_RESOLVED
+    register_team_support_views(s, warehouse=args.warehouse, data_dir=args.data_dir)
+    build_team_arena_resolved(s, data_dir=args.data_dir)
 
     # Startup diagnostics
     print(">>> Python:", sys.executable)

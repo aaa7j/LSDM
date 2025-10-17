@@ -14,8 +14,10 @@
       </div>
     </div>
     <div class="wrap">
-      <div id="content" class="card player-card">Loading...</div>
+      <div id="content">Loading...</div>
+      <footer style="margin: 28px 0; color: var(--muted); font-size: 12px;">Minimal UI. Results powered by the local FastAPI service.</footer>
     </div>
+    <script src="/static/app.js"></script>
     <script>
       function getId() {
         const m = location.pathname.match(/\/player\/(.+)$/);
@@ -38,6 +40,9 @@
         return String(d);
       }
       let __apiBase = '';
+      (function(){
+        try{ var el = document.getElementById('content'); if (el && window.setLoading) setLoading(el, true, 'Loading…'); }catch(e){}
+      })();
       function api(p) {
         if (location.protocol === 'file:' && __apiBase) return __apiBase.replace(/\/$/, '') + p;
         return p;
@@ -129,8 +134,7 @@
           const right = document.createElement('div'); right.className='player-right';
           const chips = document.createElement('div'); chips.className='award-chips';
           const addChip = (t)=>{ const c=document.createElement('div'); c.className='award'; c.textContent=t; chips.appendChild(c); };
-          if (careerFromItems.g) addChip(`GP ${careerFromItems.g}`);
-          else if (s && typeof s.games_played === 'number') addChip(`GP ${s.games_played}`);
+          // Removed GP chip as requested
           if (careerFromItems.ppg != null) addChip(`PPG ${careerFromItems.ppg}`);
           else if (s && typeof s.avg_points === 'number') addChip(`PPG ${s.avg_points}`);
           if (careerFromItems.pts) addChip(`PTS ${careerFromItems.pts}`);
@@ -215,7 +219,10 @@
             }
           } catch {}
 
-          el.innerHTML=''; el.appendChild(box);
+          // show container only after content is ready
+          el.innerHTML='';
+          el.className = 'card player-card';
+          el.appendChild(box);
         } catch (e) {
           el.textContent = 'Error: '+(e.message||e);
         }
