@@ -4,7 +4,7 @@ import os
 from typing import Iterable, List, Optional
 
 from py4j.protocol import Py4JJavaError
-from pyspark.sql import functions as F, types as T
+from pyspark.sql import functions as F
 
 
 GLOBAL_VIEWS = [

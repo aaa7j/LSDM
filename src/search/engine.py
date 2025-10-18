@@ -15,7 +15,7 @@ import re
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (
     col, lit, lower, trim, concat_ws, coalesce as Fcoalesce, regexp_replace,
-    when, least, length, substring, expr, monotonically_increasing_id
+    when, least, length, substring
 )
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType, IntegerType, FloatType

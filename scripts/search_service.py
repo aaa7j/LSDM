@@ -25,17 +25,7 @@ from pyspark.ml.evaluation import BinaryClassificationEvaluator
 
 from src.search.engine import run_query
 import src.search.engine as search_engine
-from src.analytics.outcome import (
-    FEATURE_DIFFS,
-    build_pregame_features,
-    build_match_features,
-    load_pipeline_model,
-    train_pregame_outcome_model,
-)
-from src.analytics.game_prediction import (
-    build_game_feature_frame,
-    train_outcome_model as train_simple_outcome,
-)
+# (analytics training helpers are not used directly here; kept in scripts)
 
 import json  # (se usi risposte debug)
 
@@ -3547,7 +3537,6 @@ def standings(year: Optional[int] = Query(None, ge=1900, le=2100)):
     F_ = F
 
     # 1) Sorgente e anno target (calcolo veloce)
-    import datetime as _dt
     tbls = {t.name.upper() for t in spark.catalog.listTables()}
     source = "GAME_RESULT" if "GAME_RESULT" in tbls else "GLOBAL_GAME"
     maxd_row = (

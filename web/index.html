@@ -460,6 +460,11 @@
       wireTeamSuggest(document.getElementById('h2h-home'), document.getElementById('sugg-h2h-home'));
       wireTeamSuggest(document.getElementById('h2h-away'), document.getElementById('sugg-h2h-away'));
       document.getElementById('btnH2H').addEventListener('click', openH2H);
+      // wire prediction suggest + actions
+      wireTeamSuggest(document.getElementById('pred-home'), document.getElementById('sugg-pred-home'));
+      wireTeamSuggest(document.getElementById('pred-away'), document.getElementById('sugg-pred-away'));
+      const btnPredEl = document.getElementById('btnPred');
+      if (btnPredEl) btnPredEl.addEventListener('click', (ev) => { ev.preventDefault(); openPredictInline(); });
       // H2H swap/clear
       document.getElementById('pred-away').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openPredictInline(); }});
       document.getElementById('h2h-home').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); openH2H(); }});
