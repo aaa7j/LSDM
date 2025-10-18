@@ -10,7 +10,11 @@ function highlight(text, query) {
 function setLoading(el, on, text) {
   if (!el) return;
   const msg = (typeof text === 'string' && text) ? text : 'Searching…';
-  el.innerHTML = on ? '<span class="spinner"></span> ' + msg : '';
+  if (on) {
+    el.innerHTML = '<span class="loading"><span class="spinner" aria-hidden></span><span class="loading-text">' + msg + '</span></span>';
+  } else {
+    el.innerHTML = '';
+  }
 }
 
 // Button ripple (small touch)

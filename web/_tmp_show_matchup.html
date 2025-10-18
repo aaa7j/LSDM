@@ -47,7 +47,7 @@
           const right = document.createElement('button'); right.className='btn secondary'; right.textContent='▶';
           const total = Number(d.total||0); const hasMore = (page+1)*Number(d.size||size) < total;
           right.disabled = !hasMore; right.onclick=()=>navTo(page+1);
-          const info = document.createElement('div'); info.className='sub'; info.textContent = `Page ${page+1} · ${Math.min((page+1)*size,total)}/${total}`;
+          const info = document.createElement('div'); info.className='sub'; info.textContent = `Page ${page+1} of ${Math.max(1, Math.ceil(total/size))}`;
           nav.appendChild(left); nav.appendChild(info); nav.appendChild(right); list.appendChild(nav);
           (d.items||[]).forEach(g => {
             const card = document.createElement('div'); card.className='card'; card.style.cursor='pointer';

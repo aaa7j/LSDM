@@ -4,16 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Game</title>
-    <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="/static/app.css?v=2" />
   </head>
   <body>
     <div class="topbar"><div class="inner"><a class="brand" href="/" onclick="if (location.protocol==='file:'){location.href='index.html'; return false;}">NBA Search</a><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
     <div class="wrap">
-      <div id="head" class="card" style="display:grid; gap:6px; align-items:flex-start;"></div>
-      <div id="h2h" class="card" style="margin-top:12px; display:grid; gap:8px;"></div>
+      <div id="head" class="card" style="display:grid; gap:8px; align-items:flex-start;"></div>
       <footer style="margin: 28px 0; color: var(--muted); font-size: 12px;">Minimal UI. Results powered by the local FastAPI service.</footer>
     </div>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2"></script>
     <script>
       function getParams(){
         const m = location.pathname.match(/\/game\/(.+)$/);
@@ -22,6 +21,11 @@
         const page = parseInt(url.searchParams.get('page')||'0', 10) || 0;
         const size = parseInt(url.searchParams.get('size')||'5', 10) || 5;
         return { id, page, size };
+      }
+      function nickname(name){
+        const s=(name||'').trim(); if(!s) return '';
+        const low=s.toLowerCase(); if(low.includes('trail blazers')) return 'Trail Blazers';
+        const parts=s.split(/\s+/).filter(Boolean); return parts.length? parts[parts.length-1] : s;
       }
       function navTo(page){
         const {id, size} = getParams();
@@ -32,52 +36,79 @@
       async function load(){
         const { id, page, size } = getParams();
         const head = document.getElementById('head');
-        const h2h = document.getElementById('h2h');
         if (window.setLoading) setLoading(head, true, 'Loading…'); else head.innerHTML = 'Loading...';
-        h2h.innerHTML='';
         if(!id){ head.textContent = 'Missing game id'; return; }
         try{
           const res = await fetch(`/entity/game/${encodeURIComponent(id)}?page=${page}&size=${size}`);
           if(!res.ok) throw new Error('HTTP '+res.status);
           const d = await res.json();
           if(d.error){ head.textContent = d.error; return; }
-          // Headline / scoreboard
+          // Headline / scoreboard (enhanced)
           head.innerHTML=''; if (window.setLoading) setLoading(head, false);
-          const title = el('div','title', `${d.home || d.home_id} vs ${d.away || d.away_id}`);
-          const sub = el('div','sub', `${d.date || ''}${d.location? ' · '+d.location: ''}${d.attendance? ' · attendance '+d.attendance: ''}`);
-          const score = el('div','title', `${(d.home_pts??'-')} - ${(d.away_pts??'-')}`);
-          score.style.fontSize = '28px';
-          head.appendChild(title); head.appendChild(sub); head.appendChild(score);
+          const hn = nickname(d.home || d.home_id);
+          const an = nickname(d.away || d.away_id);
+          head.appendChild(el('div','game-title', `${hn || (d.home || d.home_id)} vs ${an || (d.away || d.away_id)}`));
+          head.appendChild(el('div','game-score', `${(d.home_pts!=null? d.home_pts : '-') } - ${(d.away_pts!=null? d.away_pts : '-')}`));
+          const bits = [];
+          if (d.date) bits.push(String(d.date));
+          if (d.season_id) bits.push('season ' + String(d.season_id));
+          if (d.season_type) bits.push(String(d.season_type));
+          if (d.location) bits.push(String(d.location));
+          if (d.attendance!=null && d.attendance!=='') bits.push('attendance ' + String(d.attendance));
+          head.appendChild(el('div','sub game-meta', bits.join(' � ')));
+          // Team box stats (split 2 columns)
+          const boxes = document.createElement('div'); boxes.className='box-2col';
+          function fmtPct(v){ const n = Number(v); if (!isFinite(n)) return null; return (Math.round(n*1000)/10) + '%'; }
+          function renderBox(name, stats){
+            const b = document.createElement('div'); b.className='team-box';
+            const nm = el('div','name', name); b.appendChild(nm);
+            function add(k, v){ const r=el('div','row'); const lk=el('div','k',k); const vv=el('div','v',v); r.appendChild(lk); r.appendChild(vv); b.appendChild(r); }
+            if(stats){
+              const fg = (stats.fgm!=null && stats.fga!=null) ? `${stats.fgm}/${stats.fga}${fmtPct(stats.fg_pct)? ' ('+fmtPct(stats.fg_pct)+')':''}` : '-';
+              const tp = (stats.fg3m!=null && stats.fg3a!=null) ? `${stats.fg3m}/${stats.fg3a}${fmtPct(stats.fg3_pct)? ' ('+fmtPct(stats.fg3_pct)+')':''}` : '-';
+              const ft = (stats.ftm!=null && stats.fta!=null) ? `${stats.ftm}/${stats.fta}${fmtPct(stats.ft_pct)? ' ('+fmtPct(stats.ft_pct)+')':''}` : '-';
+              const reb = (stats.reb!=null? stats.reb : ((stats.oreb||0)+(stats.dreb||0)));
+              add('FG', fg);
+              add('3P', tp);
+              add('FT', ft);
+              add('REB', String(reb) + (stats.oreb!=null||stats.dreb!=null? ` (O ${stats.oreb??'-'} / D ${stats.dreb??'-'})`:''));
+              if(stats.ast!=null) add('AST', String(stats.ast));
+              if(stats.stl!=null) add('STL', String(stats.stl));
+              if(stats.blk!=null) add('BLK', String(stats.blk));
+              if(stats.tov!=null) add('TOV', String(stats.tov));
+              if(stats.pf!=null) add('PF', String(stats.pf));
+              if(stats.pts!=null) add('PTS', String(stats.pts));
+              if(stats.plus_minus!=null) add('+/-', String(stats.plus_minus));
+              if(stats.min!=null) add('MIN', String(stats.min));
+              if(stats.wl!=null) add('Result', String(stats.wl));
+            }
+            return b;
+          }
+          boxes.appendChild(renderBox(hn || (d.home || d.home_id), d.home_stats || null));
+          boxes.appendChild(renderBox(an || (d.away || d.away_id), d.away_stats || null));
+          head.appendChild(boxes);
+
+          // If no stats parsed, show raw payload for quick inspection
+          if (!d.home_stats && !d.away_stats) {
+            const dbg = document.createElement('details');
+            const sum = document.createElement('summary'); sum.textContent = 'Raw game data (debug)';
+            const pre = document.createElement('pre'); pre.style.whiteSpace='pre-wrap'; pre.style.fontSize='12px';
+            pre.textContent = JSON.stringify(d, null, 2);
+            dbg.appendChild(sum); dbg.appendChild(pre); head.appendChild(dbg);
+          }
           // Per-period line score
           if (Array.isArray(d.line) && d.line.length){
-            const tbl = document.createElement('table'); tbl.style.width='100%'; tbl.style.borderCollapse='collapse';
-            const th = document.createElement('tr'); th.innerHTML = '<th style="text-align:left">Period</th><th>Home</th><th>Away</th>';
-            tbl.appendChild(th);
-            d.line.forEach(r => { const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.period}</td><td style="text-align:center">${r.home_pts}</td><td style="text-align:center">${r.away_pts}</td>`; tbl.appendChild(tr); });
+            const tbl = document.createElement('table'); tbl.className='period-table';
+            const thead = document.createElement('tr'); thead.innerHTML = '<th>Period</th><th>Home</th><th>Away</th>';
+            tbl.appendChild(thead);
+            d.line.forEach(r => { const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.period}</td><td>${r.home_pts}</td><td>${r.away_pts}</td>`; tbl.appendChild(tr); });
             head.appendChild(tbl);
           }
-          // H2H section
-          const htitle = el('div','title','Head-to-Head (recent)'); h2h.appendChild(htitle);
-          const nav = document.createElement('div'); nav.style.display='flex'; nav.style.justifyContent='space-between';
-          const left = el('button','btn secondary','◀'); left.disabled = page<=0; left.addEventListener('click', ()=> navTo(Math.max(0,page-1)));
-          const right = el('button','btn secondary','▶');
-          const total = Number(d.history_total||0); const hasMore = (page+1)*Number(d.history_size||size) < total;
-          right.disabled = !hasMore; right.addEventListener('click', ()=> navTo(page+1));
-          const info = el('div','sub', `Page ${page+1} · ${Math.min((page+1)*size,total)}/${total}`);
-          nav.appendChild(left); nav.appendChild(info); nav.appendChild(right); h2h.appendChild(nav);
-          const list = document.createElement('div'); list.style.display='grid'; list.style.gap='6px';
-          (d.history||[]).forEach(g => {
-            const row = document.createElement('div'); row.className='card'; row.style.cursor='pointer';
-            row.textContent = `${g.date} — ${g.home} ${g.home_pts} - ${g.away_pts} ${g.away}`;
-            row.addEventListener('click', ()=> { location.href = `/game/${encodeURIComponent(g.id)}`; });
-            list.appendChild(row);
-          });
-          h2h.appendChild(list);
+          // (H2H removed on game page by request)
         }catch(e){ head.textContent = 'Error: '+(e.message||e); }
       }
       load();
     </script>
   </body>
-</html>
-
+  </html>
 

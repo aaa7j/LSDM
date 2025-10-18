@@ -522,6 +522,8 @@ def _mk_spark() -> SparkSession:
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.python.worker.faulthandler.enabled", "true")
         .config("spark.sql.execution.pyspark.udf.faulthandler.enabled", "true")
+        # Avoid failures on legitimate self-joins where all columns are qualified
+        .config("spark.sql.analyzer.failAmbiguousSelfJoin", "false")
     )
     # Respect SPARK_LOCAL_DIRS if provided (Windows temp location)
     local_dirs = os.environ.get("SPARK_LOCAL_DIRS")
@@ -1851,28 +1853,129 @@ def entity_head2head(
         except Exception:
             return {"total": 0, "size": size, "items": [], "error": "invalid team ids"}
 
+        # Choose best source for points (prefer direct GLOBAL_GAME scores)
+        tbls = {t.name.upper() for t in spark.catalog.listTables()}
         gg = spark.table("GLOBAL_GAME").alias("g")
-        base = (
-            gg.select(
-                F.col("game_id").cast("string").alias("gid"),
-                F.col("game_date").cast("date").alias("date"),
-                F.col("home_team_id").cast("int").alias("home_id"),
-                F.col("away_team_id").cast("int").alias("away_id"),
-                F.col("final_score_home").alias("home_pts"),
-                F.col("final_score_away").alias("away_pts"),
+        cols = {c.lower(): c for c in gg.columns}
+        if ("final_score_home" in cols) and ("final_score_away" in cols):
+            base = (
+                gg.select(
+                    F.col(cols.get("game_id", "game_id")).cast("string").alias("gid"),
+                    F.col(cols.get("game_date", "game_date")).cast("date").alias("date"),
+                    F.col(cols.get("home_team_id", "home_team_id")).cast("int").alias("home_id"),
+                    F.col(cols.get("away_team_id", "away_team_id")).cast("int").alias("away_id"),
+                    F.col("final_score_home").cast("int").alias("home_pts"),
+                    F.col("final_score_away").cast("int").alias("away_pts"),
+                )
             )
+        elif ("home_pts" in cols) and ("away_pts" in cols):
+            base = (
+                gg.select(
+                    F.col(cols.get("game_id", "game_id")).cast("string").alias("gid"),
+                    F.col(cols.get("game_date", "game_date")).cast("date").alias("date"),
+                    F.col(cols.get("home_team_id", "home_team_id")).cast("int").alias("home_id"),
+                    F.col(cols.get("away_team_id", "away_team_id")).cast("int").alias("away_id"),
+                    F.col("home_pts").cast("int").alias("home_pts"),
+                    F.col("away_pts").cast("int").alias("away_pts"),
+                )
+            )
+        elif "GAME_RESULT" in tbls:
+            gr = spark.table("GAME_RESULT")
+            base = (
+                gr.select(
+                    F.col("game_id").cast("string").alias("gid"),
+                    F.col("game_date").cast("date").alias("date"),
+                    F.col("home_team_id").cast("int").alias("home_id"),
+                    F.col("away_team_id").cast("int").alias("away_id"),
+                    F.col("home_pts").cast("int").alias("home_pts"),
+                    F.col("away_pts").cast("int").alias("away_pts"),
+                )
+            )
+        elif "GLOBAL_LINE_SCORE" in tbls:
+            ls = spark.table("GLOBAL_LINE_SCORE")
+            lp = (ls.groupBy("game_id", "team_id").agg(F.sum(F.col("points")).alias("pts")))
+            hp = (lp.withColumnRenamed("team_id", "home_id")
+                     .withColumnRenamed("pts", "home_pts")
+                     .withColumn("gid_str", F.col("game_id").cast("string"))
+                     .withColumn("home_id", F.col("home_id").cast("int")))
+            ap = (lp.withColumnRenamed("team_id", "away_id")
+                     .withColumnRenamed("pts", "away_pts")
+                     .withColumn("gid_str", F.col("game_id").cast("string"))
+                     .withColumn("away_id", F.col("away_id").cast("int")))
+            gsel = gg.select(
+                F.col(cols.get("game_id", "game_id")).cast("string").alias("gid"),
+                F.col(cols.get("game_date", "game_date")).cast("date").alias("date"),
+                F.col(cols.get("home_team_id", "home_team_id")).cast("int").alias("home_id"),
+                F.col(cols.get("away_team_id", "away_team_id")).cast("int").alias("away_id"),
+            )
+            base = (gsel
+                    .join(hp, (gsel["gid"] == hp["gid_str"]) & (gsel["home_id"] == hp["home_id"]), "left")
+                    .join(ap, (gsel["gid"] == ap["gid_str"]) & (gsel["away_id"] == ap["away_id"]), "left")
+                    .select(
+                        gsel["gid"].alias("gid"), gsel["date"], gsel["home_id"], gsel["away_id"],
+                        F.col("home_pts").cast("int").alias("home_pts"),
+                        F.col("away_pts").cast("int").alias("away_pts")
+                    )
+            )
+        else:
+            base = (
+                gg.select(
+                    F.col(cols.get("game_id", "game_id")).cast("string").alias("gid"),
+                    F.col(cols.get("game_date", "game_date")).cast("date").alias("date"),
+                    F.col(cols.get("home_team_id", "home_team_id")).cast("int").alias("home_id"),
+                    F.col(cols.get("away_team_id", "away_team_id")).cast("int").alias("away_id"),
+                    F.lit(None).cast("int").alias("home_pts"),
+                    F.lit(None).cast("int").alias("away_pts"),
+                )
+            )
+        # Only list games where 'home' actually played at home vs 'away'
+        h2h = base.where((F.col("home_id") == F.lit(hid)) & (F.col("away_id") == F.lit(aid)))
+        # Normalize scores: ensure ints and halve only the team that exceeds 150
+        h2h = (h2h
+               .withColumn("home_pts", F.col("home_pts").cast("int"))
+               .withColumn("away_pts", F.col("away_pts").cast("int"))
         )
-        cond = (
-            ((F.col("home_id") == F.lit(hid)) & (F.col("away_id") == F.lit(aid)))
-            | ((F.col("home_id") == F.lit(aid)) & (F.col("away_id") == F.lit(hid)))
+        h2h = (h2h
+               .withColumn("home_pts", F.when(F.col("home_pts") > F.lit(140), (F.col("home_pts")/F.lit(2)).cast("int")).otherwise(F.col("home_pts")))
+               .withColumn("away_pts", F.when(F.col("away_pts") > F.lit(140), (F.col("away_pts")/F.lit(2)).cast("int")).otherwise(F.col("away_pts")))
         )
-        h2h = base.where(cond)
+        # Safety: remove any accidental duplicates by game id
+        h2h = h2h.dropDuplicates(["gid"])
+
+        # Global fallback fill for summary: use GLOBAL_LINE_SCORE across the filtered set
+        try:
+            tbls2 = {t.name.upper() for t in spark.catalog.listTables()}
+            if "GLOBAL_LINE_SCORE" in tbls2:
+                ls_all = spark.table("GLOBAL_LINE_SCORE")
+                sums_all = ls_all.groupBy("game_id", "team_id").agg(F.sum(F.col("points")).alias("pts"))
+                sh_all = (sums_all.select(F.col("game_id").cast("string").alias("gid"),
+                                          F.col("team_id").cast("int").alias("home_id"),
+                                          F.col("pts").alias("hp")))
+                sa_all = (sums_all.select(F.col("game_id").cast("string").alias("gid"),
+                                          F.col("team_id").cast("int").alias("away_id"),
+                                          F.col("pts").alias("ap")))
+                h2h = (h2h.alias("pd")
+                       .join(sh_all.alias("sh"), (F.col("pd.gid") == F.col("sh.gid")) & (F.col("pd.home_id") == F.col("sh.home_id")), "left")
+                       .join(sa_all.alias("sa"), (F.col("pd.gid") == F.col("sa.gid")) & (F.col("pd.away_id") == F.col("sa.away_id")), "left")
+                       .select(
+                           F.col("pd.gid").alias("gid"), F.col("pd.date").alias("date"), F.col("pd.home_id").alias("home_id"), F.col("pd.away_id").alias("away_id"),
+                           F.coalesce(F.col("pd.home_pts"), F.col("sh.hp")).cast("int").alias("home_pts"),
+                           F.coalesce(F.col("pd.away_pts"), F.col("sa.ap")).cast("int").alias("away_pts"),
+                       ))
+                # normalize again after fill (halve only values > 150 for that team)
+                h2h = (h2h
+                       .withColumn("home_pts", F.when(F.col("home_pts") > F.lit(140), (F.col("home_pts")/F.lit(2)).cast("int")).otherwise(F.col("home_pts")))
+                       .withColumn("away_pts", F.when(F.col("away_pts") > F.lit(140), (F.col("away_pts")/F.lit(2)).cast("int")).otherwise(F.col("away_pts")))
+                )
+        except Exception:
+            pass
 
         # Aggregate summary (wins, averages) using raw ids
-        a_win = ((F.col("home_id") == F.lit(hid)) & (F.col("home_pts") > F.col("away_pts"))) | ((F.col("away_id") == F.lit(hid)) & (F.col("away_pts") > F.col("home_pts")))
-        b_win = ((F.col("home_id") == F.lit(aid)) & (F.col("home_pts") > F.col("away_pts"))) | ((F.col("away_id") == F.lit(aid)) & (F.col("away_pts") > F.col("home_pts")))
-        a_pts = F.when(F.col("home_id") == F.lit(hid), F.col("home_pts")).otherwise(F.when(F.col("away_id") == F.lit(hid), F.col("away_pts")).otherwise(None))
-        b_pts = F.when(F.col("home_id") == F.lit(aid), F.col("home_pts")).otherwise(F.when(F.col("away_id") == F.lit(aid), F.col("away_pts")).otherwise(None))
+        # With home-only filter, W/L and PPG become straightforward
+        a_win = (F.col("home_pts") > F.col("away_pts"))
+        b_win = (F.col("away_pts") > F.col("home_pts"))
+        a_pts = F.col("home_pts")
+        b_pts = F.col("away_pts")
         diff = (a_pts - b_pts)
         agg = (h2h
                .agg(
@@ -1899,57 +2002,85 @@ def entity_head2head(
         # Resolve canonical team names for ids
         a_name = None; b_name = None
         try:
-            t = spark.table("TEAM_CONFERENCE").select(F.col("team_id").cast("int").alias("id"), F.col("team_name").alias("name"))
-            names = {int(r["id"]): r["name"] for r in t.where(F.col("team_id").cast("int").isin([hid, aid])).collect()}
+            t = spark.table("TEAM_CONFERENCE").select(
+                F.col("team_id").cast("int").alias("id"),
+                F.col("team_name").alias("name")
+            )
+            names = {int(r["id"]): r["name"] for r in t.where(F.col("id").isin([hid, aid])).collect()}
             a_name = names.get(hid); b_name = names.get(aid)
         except Exception:
             try:
-                t = spark.table("GLOBAL_TEAM").select(F.col("team_id").cast("int").alias("id"), F.col("team_name").alias("name"))
-                names = {int(r["id"]): r["name"] for r in t.where(F.col("team_id").cast("int").isin([hid, aid])).collect()}
+                t = spark.table("GLOBAL_TEAM").select(
+                    F.col("team_id").cast("int").alias("id"),
+                    F.col("team_name").alias("name")
+                )
+                names = {int(r["id"]): r["name"] for r in t.where(F.col("id").isin([hid, aid])).collect()}
                 a_name = names.get(hid); b_name = names.get(aid)
             except Exception:
                 pass
         if a_name: summary["a_name"] = a_name
         if b_name: summary["b_name"] = b_name
 
-        # Resolve team names (TEAM_CONFERENCE preferred)
-        try:
-            tc = spark.table("TEAM_CONFERENCE").alias("t")
-            th = tc.alias("th"); ta = tc.alias("ta")
-            h2h = (h2h
-                   .join(th, h2h["home_id"] == th["team_id"], "left")
-                   .join(ta, h2h["away_id"] == ta["team_id"], "left")
-                   .select(
-                       F.col("gid").alias("id"),
-                       F.col("date").cast("string").alias("date"),
-                       th["team_name"].alias("home"),
-                       ta["team_name"].alias("away"),
-                       F.col("home_pts"),
-                       F.col("away_pts"),
-                   ))
-        except Exception:
-            gt = spark.table("GLOBAL_TEAM").alias("t")
-            th = gt.alias("th"); ta = gt.alias("ta")
-            h2h = (h2h
-                   .join(th, h2h["home_id"] == th["team_id"], "left")
-                   .join(ta, h2h["away_id"] == ta["team_id"], "left")
-                   .select(
-                       F.col("gid").alias("id"),
-                       F.col("date").cast("string").alias("date"),
-                       th["team_name"].alias("home"),
-                       ta["team_name"].alias("away"),
-                       F.col("home_pts"),
-                       F.col("away_pts"),
-                   ))
-
         from pyspark.sql.window import Window
-        w = Window.orderBy(F.col("date").desc(), F.col("id").desc())
-        h2h = h2h.withColumn("rn", F.row_number().over(w))
+        w = Window.orderBy(F.col("date").desc(), F.col("gid").desc())
+        h2h_num = h2h.withColumn("rn", F.row_number().over(w))
         start = page * size + 1
         end = (page + 1) * size
-        total = int(h2h.count())
-        page_df = h2h.where((F.col("rn") >= F.lit(start)) & (F.col("rn") <= F.lit(end)))
-        items = [r.asDict(recursive=True) for r in page_df.select("id","date","home","away","home_pts","away_pts").collect()]
+        total = int(h2h_num.count())
+        page_df = h2h_num.where((F.col("rn") >= F.lit(start)) & (F.col("rn") <= F.lit(end)))
+
+        # Fallback fill for missing scores using GLOBAL_LINE_SCORE on the paginated slice only
+        try:
+            tbls2 = {t.name.upper() for t in spark.catalog.listTables()}
+            if "GLOBAL_LINE_SCORE" in tbls2:
+                ls = spark.table("GLOBAL_LINE_SCORE")
+                sums = ls.groupBy("game_id", "team_id").agg(F.sum(F.col("points")).alias("pts"))
+                sh = (sums.select(F.col("game_id").cast("string").alias("gid"),
+                                  F.col("team_id").cast("int").alias("home_id"),
+                                  F.col("pts").alias("hp")))
+                sa = (sums.select(F.col("game_id").cast("string").alias("gid"),
+                                  F.col("team_id").cast("int").alias("away_id"),
+                                  F.col("pts").alias("ap")))
+                page_df = (page_df.alias("pd")
+                           .join(sh.alias("sh"), (F.col("pd.gid") == F.col("sh.gid")) & (F.col("pd.home_id") == F.col("sh.home_id")), "left")
+                           .join(sa.alias("sa"), (F.col("pd.gid") == F.col("sa.gid")) & (F.col("pd.away_id") == F.col("sa.away_id")), "left")
+                           .select(
+                               F.col("pd.gid").alias("gid"), F.col("pd.date").alias("date"), F.col("pd.home_id").alias("home_id"), F.col("pd.away_id").alias("away_id"),
+                               F.coalesce(F.col("pd.home_pts"), F.col("sh.hp")).cast("int").alias("home_pts"),
+                               F.coalesce(F.col("pd.away_pts"), F.col("sa.ap")).cast("int").alias("away_pts"),
+                           ))
+        except Exception:
+            pass
+        # Final normalize on page slice as well (halve only values > 150 for that team)
+        page_df = (page_df
+                   .withColumn("home_pts", F.when(F.col("home_pts") > F.lit(140), (F.col("home_pts")/F.lit(2)).cast("int")).otherwise(F.col("home_pts")))
+                   .withColumn("away_pts", F.when(F.col("away_pts") > F.lit(140), (F.col("away_pts")/F.lit(2)).cast("int")).otherwise(F.col("away_pts")))
+        )
+
+        # Resolve team names on the paginated slice only, using a de-duplicated name mapping
+        try:
+            tc = spark.table("TEAM_CONFERENCE")
+            tnames = (tc.select(F.col("team_id").cast("int").alias("team_id"), F.col("team_name").alias("team_name"))
+                        .groupBy("team_id").agg(F.first("team_name", ignorenulls=True).alias("team_name")))
+        except Exception:
+            gt = spark.table("GLOBAL_TEAM")
+            tnames = (gt.select(F.col("team_id").cast("int").alias("team_id"), F.col("team_name").alias("team_name"))
+                        .groupBy("team_id").agg(F.first("team_name", ignorenulls=True).alias("team_name")))
+
+        th = tnames.alias("th"); ta = tnames.alias("ta")
+        named = (page_df.alias("pd")
+                 .join(th, F.col("pd.home_id") == F.col("th.team_id"), "left")
+                 .join(ta, F.col("pd.away_id") == F.col("ta.team_id"), "left")
+                 .select(
+                     F.col("pd.gid").alias("id"),
+                     F.col("pd.date").cast("string").alias("date"),
+                     F.col("th.team_name").alias("home"),
+                     F.col("ta.team_name").alias("away"),
+                     F.col("pd.home_pts").alias("home_pts"),
+                     F.col("pd.away_pts").alias("away_pts"),
+                 ))
+
+        items = [r.asDict(recursive=True) for r in named.select("id","date","home","away","home_pts","away_pts").collect()]
         return {"total": total, "size": int(size), "items": items, "summary": summary}
     except Exception as e:
         return {"total": 0, "size": int(size), "items": [], "error": str(e)}
@@ -2593,13 +2724,13 @@ def debug_pbp_check(pid: str):
 @app.get("/entity/team/{tid}")
 def entity_team(tid: str):
     """
-    Dettagli squadra + roster.
-    Priorità sorgenti:
+    Team details and roster.
+    Source priority:
       - GLOBAL_TEAM
-      - TEAM_INFO_COMMON / TEAM_DETAILS / GLOBAL_TEAM_DETAILS (se registrate)
-      - TEAM_CONFERENCE (per East/West)
-      - CSV team_info_common / team_details (fallback, robusto a Windows e delimitatori)
-      - TEAM_ARENA_RESOLVED (arena/capacity centralizzate)
+      - TEAM_INFO_COMMON / TEAM_DETAILS / GLOBAL_TEAM_DETAILS (if available)
+      - TEAM_CONFERENCE (for East/West)
+      - CSV team_info_common / team_details (Windows-friendly fallback)
+      - TEAM_ARENA_RESOLVED (centralized arena/capacity)
       - GLOBAL_PLAYER -> COMMON_PLAYER_INFO (roster)
     """
     import os
@@ -2624,11 +2755,11 @@ def entity_team(tid: str):
 
     def _read_csv_local(name: str):
         """
-        Legge data/<name>.csv in modo robusto (Windows-friendly):
-        - risolve in file:/// URI
-        - prova delimitatori ',', ';', '\\t'
+        Robust CSV reader for data/<name>.csv (Windows-friendly):
+        - resolves to file:/// URI
+        - tries delimiters ',', ';', '\\t'
         - header + inferSchema + multiline + escape
-        - normalizza i nomi colonna a lowercase + strip
+        - normalizes column names to lowercase + strip
         """
         p = pathlib.Path(DATA_DIR).resolve() / f"{name}.csv"
         if not p.exists():
@@ -2923,7 +3054,7 @@ def entity_team(tid: str):
                         "jersey": rr.get("jersey_number") if "jersey_number" in sel else None,
                     })
 
-    # ordina roster per ruolo → nome
+    # ordina roster per ruolo ? nome
     order = {"G": 0, "G-F": 1, "F-G": 2, "F": 3, "F-C": 4, "C-F": 5, "C": 6}
     roster = sorted(roster, key=lambda x: (order.get((x.get("position") or "").upper(), 99), (x.get("name") or "").lower()))
     rec["roster"] = roster
@@ -2965,38 +3096,116 @@ def entity_game(gid: str, page: int = Query(0, ge=0), size: int = Query(5, ge=1,
     if spark is None:
         return {"error": "service starting"}
     try:
-        g = spark.table("GLOBAL_GAME").where(F.col("game_id").cast("string") == F.lit(gid))
-        g = g.alias("g")
-        teams = spark.table("TEAM_CONFERENCE").alias("t")
-        th = teams.alias("th")
-        ta = teams.alias("ta")
-        df = (
-            g
-            .join(th, g["home_team_id"].cast("int") == th["team_id"], "left")
-            .join(ta, g["away_team_id"].cast("int") == ta["team_id"], "left")
-        )
-        row = (
-            df.select(
-                g["game_id"].cast("string").alias("id"),
-                g["game_date"].cast("date").alias("date"),
-                g["home_team_id"].cast("string").alias("home_id"),
-                g["away_team_id"].cast("string").alias("away_id"),
-                th["team_name"].alias("home"),
-                ta["team_name"].alias("away"),
-                g["final_score_home"].alias("home_pts"),
-                g["final_score_away"].alias("away_pts"),
-                g["location"].alias("location"),
-                g["attendance"].alias("attendance"),
-                g["period_count"].alias("period_count"),
-            )
-            .limit(1)
-            .collect()
-        )
-        if not row:
-            return {"error": "not found", "id": gid}
-        rec = row[0].asDict(recursive=True)
+        tbls_now = {t.name.upper() for t in spark.catalog.listTables()}
+        have_global_game = ("GLOBAL_GAME" in tbls_now)
+        have_team_conf = ("TEAM_CONFERENCE" in tbls_now)
+        have_game_result = ("GAME_RESULT" in tbls_now)
 
-        # Optional per-period line score
+        # Attempt GAME_RESULT first (robust totals from line scores)
+        row = []
+        if have_game_result:
+            gr = spark.table("GAME_RESULT").alias("gr")
+            if have_team_conf:
+                tc = spark.table("TEAM_CONFERENCE").alias("tc")
+                th = tc.alias("th"); ta = tc.alias("ta")
+                df = (
+                    gr.where(F.col("game_id").cast("string") == F.lit(str(gid)))
+                      .join(th, F.col("gr.home_team_id").cast("int") == F.col("th.team_id"), "left")
+                      .join(ta, F.col("gr.away_team_id").cast("int") == F.col("ta.team_id"), "left")
+                      .select(
+                          F.col("gr.game_id").cast("string").alias("id"),
+                          F.col("gr.game_date").cast("date").alias("date"),
+                          F.col("gr.home_team_id").cast("string").alias("home_id"),
+                          F.col("gr.away_team_id").cast("string").alias("away_id"),
+                          F.col("th.team_name").alias("home"),
+                          F.col("ta.team_name").alias("away"),
+                          F.col("gr.home_pts").cast("int").alias("home_pts"),
+                          F.col("gr.away_pts").cast("int").alias("away_pts"),
+                      )
+                )
+            else:
+                df = (
+                    gr.where(F.col("game_id").cast("string") == F.lit(str(gid)))
+                      .select(
+                          F.col("game_id").cast("string").alias("id"),
+                          F.col("game_date").cast("date").alias("date"),
+                          F.col("home_team_id").cast("string").alias("home_id"),
+                          F.col("away_team_id").cast("string").alias("away_id"),
+                          F.lit(None).cast("string").alias("home"),
+                          F.lit(None).cast("string").alias("away"),
+                          F.col("home_pts").cast("int").alias("home_pts"),
+                          F.col("away_pts").cast("int").alias("away_pts"),
+                      )
+                )
+            row = df.limit(1).collect()
+
+                # If GAME_RESULT not available or empty, attempt GLOBAL_GAME
+        if not row and have_global_game:
+            gg = spark.table("GLOBAL_GAME").where(F.col("game_id").cast("string") == F.lit(str(gid)))
+            gg = gg.alias("g")
+            teams = spark.table("TEAM_CONFERENCE").alias("t") if have_team_conf else None
+            th = teams.alias("th") if teams is not None else None
+            ta = teams.alias("ta") if teams is not None else None
+            if teams is not None:
+                df = (
+                    gg
+                    .join(th, gg["home_team_id"].cast("int") == th["team_id"], "left")
+                    .join(ta, gg["away_team_id"].cast("int") == ta["team_id"], "left")
+                )
+            else:
+                df = gg
+
+            # Optional team box fields from GLOBAL_GAME (game.csv). Use if present.
+            gcols = {c.lower(): c for c in gg.columns}
+            def _col(name: str):
+                c = gcols.get(name.lower())
+                return F.col(c) if c is not None else None
+            def opt(name: str):
+                c = _col(name)
+                return c if c is not None else F.lit(None)
+            def opt_any(names):
+                for nm in names:
+                    c = _col(nm)
+                    if c is not None:
+                        return c
+                return F.lit(None)
+
+            base_sel = [
+                gg["game_id"].cast("string").alias("id"),
+                gg["game_date"].cast("date").alias("date"),
+                gg["home_team_id"].cast("string").alias("home_id"),
+                gg["away_team_id"].cast("string").alias("away_id"),
+                (th["team_name"] if teams is not None else F.lit(None).cast("string")).alias("home"),
+                (ta["team_name"] if teams is not None else F.lit(None).cast("string")).alias("away"),
+                opt_any(["final_score_home","home_pts","pts_home"]).cast("int").alias("home_pts"),
+                opt_any(["final_score_away","away_pts","pts_away"]).cast("int").alias("away_pts"),
+                opt("location").alias("location"),
+                opt("attendance").alias("attendance"),
+                opt("period_count").alias("period_count"),
+            ]
+            # Home/Away box score stats
+            for stat in ["fgm","fga","fg_pct","fg3m","fg3a","fg3_pct","ftm","fta","ft_pct","oreb","dreb","reb","ast","stl","blk","tov","pf","pts"]:
+                base_sel.append(opt(f"{stat}_home").alias(f"{stat}_home"))
+                base_sel.append(opt(f"{stat}_away").alias(f"{stat}_away"))
+            row = (df.select(*base_sel).limit(1).collect())# Do NOT return here if not found in GLOBAL_GAME — fall back to CSVs
+        if row:
+            rec = row[0].asDict(recursive=True)
+        else:
+            rec = {}
+        # Pack team box stats into nested objects for UI
+        try:
+            hstats = {}
+            astats = {}
+            for stat in ["fgm","fga","fg_pct","fg3m","fg3a","fg3_pct","ftm","fta","ft_pct","oreb","dreb","reb","ast","stl","blk","tov","pf","pts"]:
+                hk = f"{stat}_home"; ak = f"{stat}_away"
+                if hk in rec: hstats[stat] = rec.get(hk)
+                if ak in rec: astats[stat] = rec.get(ak)
+            if hstats: rec["home_stats"] = hstats
+            if astats: rec["away_stats"] = astats
+        except Exception:
+            pass
+
+        # Optional per-period line score (from Parquet GLOBAL_LINE_SCORE if available)
         try:
             if "GLOBAL_LINE_SCORE" in [tt.name for tt in spark.catalog.listTables()]:
                 ls = spark.table("GLOBAL_LINE_SCORE").alias("ls")
@@ -3010,8 +3219,150 @@ def entity_game(gid: str, page: int = Query(0, ge=0), size: int = Query(5, ge=1,
                         )
                         .orderBy(F.col("period").asc()))
                 rec["line"] = [r.asDict(recursive=True) for r in per.collect()]
+                # Fallback total points from per-period line if missing
+                try:
+                    if rec.get("home_pts") is None or rec.get("away_pts") is None:
+                        hp = sum(int(p.get("home_pts") or 0) for p in rec.get("line") or [])
+                        ap = sum(int(p.get("away_pts") or 0) for p in rec.get("line") or [])
+                        if rec.get("home_pts") is None:
+                            rec["home_pts"] = int(hp)
+                        if rec.get("away_pts") is None:
+                            rec["away_pts"] = int(ap)
+                except Exception:
+                    pass
         except Exception:
             pass
+
+        # Fallback enrich from local CSVs (game.csv, line_score.csv)
+        try:
+            import pathlib
+            data_dir = os.environ.get("DATA_DIR", "data")
+            base = pathlib.Path(data_dir)
+            # normalize gid for numeric match (strip leading zeros)
+            try:
+                gid_i = int(str(gid))
+            except Exception:
+                gid_i = None
+            # game.csv -> team names, team box stats, totals, W/L
+            gcsv = base / "game.csv"
+            if gcsv.exists():
+                dfc = (spark.read.format("csv")
+                        .option("header", True).option("inferSchema", True)
+                        .option("multiLine", True).option("escape", '"')
+                        .load(gcsv.as_uri()))
+                # normalize columns
+                for c in dfc.columns:
+                    dfc = dfc.withColumnRenamed(c, c.strip().lower())
+                cond = (F.col("game_id").cast("string") == F.lit(str(gid)))
+                if gid_i is not None:
+                    cond = cond | (F.col("game_id").cast("bigint") == F.lit(gid_i))
+                sel = dfc.where(cond).limit(1).collect()
+                if sel:
+                    r0 = sel[0].asDict(recursive=True)
+                    # names/ids (force from CSV)
+                    rec["home"] = r0.get("team_name_home") or r0.get("team_abbreviation_home") or rec.get("home")
+                    rec["away"] = r0.get("team_name_away") or r0.get("team_abbreviation_away") or rec.get("away")
+                    if not rec.get("home_id") and r0.get("team_id_home") is not None:
+                        rec["home_id"] = str(r0.get("team_id_home"))
+                    if not rec.get("away_id") and r0.get("team_id_away") is not None:
+                        rec["away_id"] = str(r0.get("team_id_away"))
+                    # totals (override to ensure UI shows values)
+                    if r0.get("pts_home") is not None:
+                        try: rec["home_pts"] = int(float(r0.get("pts_home")))
+                        except Exception: rec["home_pts"] = r0.get("pts_home")
+                    if r0.get("pts_away") is not None:
+                        try: rec["away_pts"] = int(float(r0.get("pts_away")))
+                        except Exception: rec["away_pts"] = r0.get("pts_away")
+                    # season info
+                    if r0.get("season_id") is not None:
+                        rec["season_id"] = r0.get("season_id")
+                    if r0.get("season_type") is not None:
+                        rec["season_type"] = r0.get("season_type")
+                    # stats
+                    def pack(prefix: str):
+                        out = {}
+                        keys = [
+                            "fgm","fga","fg_pct","fg3m","fg3a","fg3_pct","ftm","fta","ft_pct",
+                            "oreb","dreb","reb","ast","stl","blk","tov","pf","pts","plus_minus","min","wl"
+                        ]
+                        for k in keys:
+                            # Support both suffixed and unsuffixed columns (e.g., min)
+                            val = r0.get(f"{k}_{prefix}")
+                            if val is None and k == "min":
+                                val = r0.get("min")
+                            if val is None and k == "wl":
+                                val = r0.get(f"wl_{prefix}")
+                            if val is None:
+                                continue
+                            try:
+                                if k.endswith("pct"):
+                                    out[k] = float(val)
+                                elif k in ("min", "wl"):
+                                    out[k] = val
+                                else:
+                                    out[k] = float(val) if isinstance(val, (float, int)) else float(str(val))
+                            except Exception:
+                                out[k] = val
+                        return out
+                    hs = pack("home"); as_ = pack("away")
+                    if hs: rec["home_stats"] = {**rec.get("home_stats", {}), **hs}
+                    if as_: rec["away_stats"] = {**rec.get("away_stats", {}), **as_}
+                    # date fallback
+                    if not rec.get("date") and r0.get("game_date"):
+                        try:
+                            rec["date"] = str(r0.get("game_date")).split(" ")[0]
+                        except Exception:
+                            pass
+            # line_score.csv -> per-period points if not already available
+            if not rec.get("line"):
+                lcsv = base / "line_score.csv"
+                if lcsv.exists():
+                    dfc = (spark.read.format("csv")
+                            .option("header", True).option("inferSchema", True)
+                            .option("multiLine", True).option("escape", '"')
+                            .load(lcsv.as_uri()))
+                    for c in dfc.columns:
+                        dfc = dfc.withColumnRenamed(c, c.strip().lower())
+                    # Filter by game_id
+                    cond2 = (F.col("game_id").cast("string") == F.lit(str(gid)))
+                    if gid_i is not None:
+                        cond2 = cond2 | (F.col("game_id").cast("bigint") == F.lit(gid_i))
+                    r1row = (dfc.where(cond2).limit(1).collect())
+                    if r1row:
+                        r1 = r1row[0].asDict(recursive=True)
+                        periods = []
+                        # 4 quarters
+                        for i in range(1,5):
+                            hp = r1.get(f"pts_qtr{i}_home"); ap = r1.get(f"pts_qtr{i}_away")
+                            if hp is not None or ap is not None:
+                                periods.append({"period": i, "home_pts": int(hp or 0), "away_pts": int(ap or 0)})
+                        # OTs
+                        for i in range(1,11):
+                            hp = r1.get(f"pts_ot{i}_home"); ap = r1.get(f"pts_ot{i}_away")
+                            if (hp is not None and hp != "") or (ap is not None and ap != ""):
+                                periods.append({"period": 4 + i, "home_pts": int(hp or 0), "away_pts": int(ap or 0)})
+                        if periods:
+                            rec["line"] = periods
+                        # Totals fallback
+                        if rec.get("home_pts") is None and r1.get("pts_home") is not None:
+                            rec["home_pts"] = int(r1.get("pts_home"))
+                        if rec.get("away_pts") is None and r1.get("pts_away") is not None:
+                            rec["away_pts"] = int(r1.get("pts_away"))
+                        # Date fallback from line_score
+                        if not rec.get("date") and r1.get("game_date_est"):
+                            try:
+                                rec["date"] = str(r1.get("game_date_est")).split(" ")[0]
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+        # If still missing required fields, return a minimal record using CSV only
+        if not rec.get("id"):
+            rec["id"] = str(gid)
+        # Ensure date is string
+        if rec.get("date") is not None:
+            rec["date"] = str(rec.get("date"))
 
         # Head-to-head history (previous games only), paginated
         try:
@@ -3072,12 +3423,12 @@ def entity_game(gid: str, page: int = Query(0, ge=0), size: int = Query(5, ge=1,
 # --------------------------
 def _derive_team_conference(spark: SparkSession):
     """
-    Ritorna un DataFrame (team_id:int, team_name, city, conference:string)
-    Conferenza risolta in quest'ordine:
-      1) GLOBAL_TEAM.conference se esiste e non null
-      2) mapping da divisione (Atlantic/Central/Southeast -> East; Northwest/Pacific/Southwest -> West)
-      3) TEAM_DETAILS / GLOBAL_TEAM_DETAILS (se presenti)
-      4) TEAM_INFO_COMMON (se presente)
+    Return a DataFrame (team_id:int, team_name, city, conference:string).
+    Conference is resolved in this order:
+      1) GLOBAL_TEAM.conference if present and not null
+      2) From division (Atlantic/Central/Southeast -> East; Northwest/Pacific/Southwest -> West)
+      3) TEAM_DETAILS / GLOBAL_TEAM_DETAILS (if present)
+      4) TEAM_INFO_COMMON (if present)
     """
     gt = spark.table("GLOBAL_TEAM")
     sel = [
@@ -3093,7 +3444,7 @@ def _derive_team_conference(spark: SparkSession):
         sel.append(F.col("division"))
     teams = gt.select(*sel)
 
-    # fallback da division
+    # Fallback from division
     if "division" in teams.columns:
         east_divs = F.array(F.lit("atlantic"), F.lit("central"), F.lit("southeast"))
         west_divs = F.array(F.lit("northwest"), F.lit("pacific"), F.lit("southwest"))
@@ -3438,6 +3789,7 @@ def standings(year: Optional[int] = Query(None, ge=1900, le=2100)):
     except Exception:
         pass
     return result
+
 
 
 

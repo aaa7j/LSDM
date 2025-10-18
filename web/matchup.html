@@ -4,16 +4,16 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Matchup</title>
-    <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="/static/app.css?v=2" />
   </head>
   <body>
     <div class="topbar"><div class="inner"><a class="brand" href="/" onclick="if (location.protocol==='file:'){location.href='index.html'; return false;}">NBA Search</a><div class="nav"><a href="/">Search</a><a href="/predict-ui">Predict</a></div></div></div>
     <div class="wrap">
       <div id="content" class="card">Loading...</div>
-      <div id="h2h" class="card" style="margin-top:12px;"></div>
+      <div id="h2h" class="card" style="margin-top:12px; display:grid; gap:8px;"></div>
       <footer style="margin: 28px 0; color: var(--muted); font-size: 12px;">Minimal UI. Results powered by the local FastAPI service.</footer>
     </div>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2"></script>
     <script>
       function getIds(){
         const m = location.pathname.match(/\/matchup\/([^\/]+)\/([^\/]+)/);
@@ -26,14 +26,35 @@
         u.searchParams.set('page', String(page));
         location.href = `/matchup/${encodeURIComponent(home)}/${encodeURIComponent(away)}?${u.searchParams}`;
       }
+      function nickname(name){
+        const s = (name||'').trim(); if(!s) return '';
+        const low = s.toLowerCase();
+        if (low.includes('trail blazers')) return 'Trail Blazers';
+        // Use last word as nickname (e.g., Lakers, Celtics, Jazz, Timberwolves)
+        const parts = s.split(/\s+/).filter(Boolean);
+        return parts.length ? parts[parts.length-1] : s;
+      }
+      function mkLine(teamLink, scoreText){
+        const line = document.createElement('div'); line.className = 'line';
+        const filler = document.createElement('span'); filler.textContent = '';
+        const score = document.createElement('span'); score.className = 'score'; score.textContent = scoreText;
+        line.appendChild(teamLink); line.appendChild(filler); line.appendChild(score);
+        // placeholder for column alignment
+        const empty=document.createElement('span'); empty.textContent=''; line.appendChild(empty);
+        return line;
+      }
       async function load(){
         const ids = getIds();
         const u = new URL(location.href);
         const page = parseInt(u.searchParams.get('page')||'0',10)||0;
         const size = 5;
         const head = document.getElementById('content');
+        // Stack header elements vertically
+        head.style.display = 'grid';
+        head.style.gap = '8px';
+        head.style.alignItems = 'start';
         const list = document.getElementById('h2h');
-        if (window.setLoading) setLoading(head, true, 'Loading…'); else head.textContent='Loading...';
+        if (window.setLoading) setLoading(head, true, 'Loading...'); else head.textContent='Loading...';
         list.innerHTML='';
         if(!ids.home || !ids.away){ head.textContent='Missing team ids'; return; }
         try{
@@ -41,45 +62,63 @@
           if(!res.ok) throw new Error('HTTP '+res.status);
           const d = await res.json();
           if(d.error){ head.textContent = d.error; return; }
-          const an = (d.summary && d.summary.a_name) ? d.summary.a_name : ids.home;
-          const bn = (d.summary && d.summary.b_name) ? d.summary.b_name : ids.away;
-          head.textContent = `Head-to-head: ${an} vs ${bn}`;
+          const an = (d.summary && d.summary.a_name) ? d.summary.a_name : String(ids.home);
+          const bn = (d.summary && d.summary.b_name) ? d.summary.b_name : String(ids.away);
 
-          // Summary card (overall)
+          // Header with title and compact stats
+          head.innerHTML = '';
+          const title = document.createElement('div'); title.className='title'; title.textContent = an + ' vs ' + bn; head.appendChild(title);
           if (d.summary){
             const s = d.summary;
-            const sum = document.createElement('div'); sum.className='card'; sum.style.display='grid'; sum.style.gap='6px';
-            const t = document.createElement('div'); t.className='title'; t.textContent='Summary'; sum.appendChild(t);
-            const sub = document.createElement('div'); sub.className='sub';
-            const wl = `${s.a_w ?? 0}-${s.b_w ?? 0}`;
+            const sum = document.createElement('div'); sum.className='h2h-summary';
+            const mk = (label, value) => { const c=document.createElement('div'); c.className='stat'; const l=document.createElement('div'); l.className='label'; l.textContent=label; const v=document.createElement('div'); v.className='value'; v.textContent=value; c.appendChild(l); c.appendChild(v); return c; };
+            const games = String(s.games ?? 0);
+            const wl = String((s.a_w ?? 0)) + '-' + String((s.b_w ?? 0));
             const diff = (typeof s.diff_avg === 'number') ? (Math.round(s.diff_avg*10)/10).toFixed(1) : '-';
-            sub.textContent = `Games: ${s.games ?? 0}  |  W-L: ${wl}  |  Avg diff: ${diff}`;
-            sum.appendChild(sub);
-            const ppg = document.createElement('div'); ppg.className='sub';
-            const a_ppg = (typeof s.a_ppg === 'number') ? (Math.round(s.a_ppg*10)/10).toFixed(1) : '-';
-            const b_ppg = (typeof s.b_ppg === 'number') ? (Math.round(s.b_ppg*10)/10).toFixed(1) : '-';
-            ppg.textContent = `PPG: ${an} ${a_ppg} · ${bn} ${b_ppg}`;
-            sum.appendChild(ppg);
-            list.appendChild(sum);
+            sum.appendChild(mk('Games', games));
+            sum.appendChild(mk('W-L', wl));
+            sum.appendChild(mk('Avg Diff', diff));
+            head.appendChild(sum);
           }
-          const nav = document.createElement('div'); nav.style.display='flex'; nav.style.justifyContent='space-between';
-          const left = document.createElement('button'); left.className='btn secondary'; left.textContent='◀'; left.disabled = page<=0; left.onclick=()=>navTo(Math.max(0,page-1));
-          const right = document.createElement('button'); right.className='btn secondary'; right.textContent='▶';
+
+          // Navigation
+          const nav = document.createElement('div'); nav.className='h2h-header';
+          const left = document.createElement('button'); left.className='arrow'; left.textContent='<'; left.disabled = page<=0; left.addEventListener('click', ()=>navTo(Math.max(0,page-1)));
+          const right = document.createElement('button'); right.className='arrow'; right.textContent='>';
           const total = Number(d.total||0); const hasMore = (page+1)*Number(d.size||size) < total;
-          right.disabled = !hasMore; right.onclick=()=>navTo(page+1);
-          const info = document.createElement('div'); info.className='sub'; info.textContent = `Page ${page+1} · ${Math.min((page+1)*size,total)}/${total}`;
+          right.disabled = !hasMore; right.addEventListener('click', ()=>navTo(page+1));
+          const info = document.createElement('div'); info.className='sub'; info.textContent = 'Page ' + String(page+1) + ' of ' + String(Math.max(1, Math.ceil(total/size)));
           nav.appendChild(left); nav.appendChild(info); nav.appendChild(right); list.appendChild(nav);
-          (d.items||[]).forEach(g => {
-            const card = document.createElement('div'); card.className='card'; card.style.cursor='pointer';
-            card.textContent = `${g.date} — ${g.home} ${g.home_pts} - ${g.away_pts} ${g.away}`;
-            card.onclick = ()=> { location.href = `/game/${encodeURIComponent(g.id)}`; };
-            list.appendChild(card);
+
+          // Series-style tiles (BR-like)
+          const strip = document.createElement('div'); strip.className='series-strip';
+          (d.items||[]).forEach((g, idx) => {
+            const box = document.createElement('div'); box.className='series-game'; if (idx===0) box.classList.add('current');
+            const hd = document.createElement('div'); hd.className='ghead';
+            const hdl = document.createElement('div'); hdl.textContent = g.date || '';
+            const hdr = document.createElement('a'); hdr.className='final'; hdr.href = `/game/${encodeURIComponent(g.id)}`; hdr.textContent = 'Final';
+            hd.appendChild(hdl); hd.appendChild(hdr);
+
+            const ha = document.createElement('a'); ha.className='team'; ha.href='/?q=' + encodeURIComponent(g.home||''); ha.textContent = nickname(g.home||'');
+            const aa = document.createElement('a'); aa.className='team'; aa.href='/?q=' + encodeURIComponent(g.away||''); aa.textContent = nickname(g.away||'');
+            const s1 = (g.home_pts!=null? String(g.home_pts):'-');
+            const s2 = (g.away_pts!=null? String(g.away_pts):'-');
+            const l1 = mkLine(ha, s1);
+            const l2 = mkLine(aa, s2);
+            // bold winner
+            const hp = Number(g.home_pts); const ap = Number(g.away_pts);
+            if(!Number.isNaN(hp) && !Number.isNaN(ap)){
+              if(hp>ap) l1.querySelector('.score').style.fontWeight='900';
+              else if(ap>hp) l2.querySelector('.score').style.fontWeight='900';
+            }
+            box.appendChild(hd); box.appendChild(l1); box.appendChild(l2);
+            box.addEventListener('click', ()=>{ location.href = `/game/${encodeURIComponent(g.id)}`; });
+            strip.appendChild(box);
           });
+          list.appendChild(strip);
         }catch(e){ head.textContent='Error: '+(e.message||e); }
       }
       load();
     </script>
   </body>
   </html>
-
-
