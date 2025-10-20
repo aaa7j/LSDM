@@ -23,7 +23,6 @@ os.environ["PYSPARK_SUBMIT_ARGS"] = (
     "pyspark-shell"
 )
 
-# 4) Debug prints (temporanei: puoi toglierli dopo)
 print(">>> Python exe:", sys.executable)
 print(">>> JAVA_HOME :", os.environ.get("JAVA_HOME"))
 try:

@@ -1,4 +1,3 @@
--- src/etl/transform_gav.sql
 -- Tutte le SELECT qui sotto presuppongono le viste temp standardizzate
 -- create in read_sources.py. Non usare COALESCE su colonne che non esistono.
 
@@ -201,7 +200,6 @@ SELECT
   player3_name,
   player3_team_id,
   video_available_flag,
-  -- Enriched fields appended (backward-compatible)
   score_home,
   score_away,
   prev_home,
@@ -339,11 +337,7 @@ SELECT
 FROM draft_history
 ;
 
--- Alias compatibile: la enriched ora coincide con la normale
--- (Rimosso) GLOBAL_PBP_ENRICHED non è più necessario: usare GLOBAL_PLAY_BY_PLAY.
-
 -- ========== GLOBAL_SCORING_EVENTS ==========
--- Eventi con punti assegnati, comodo per analytics veloci.
 CREATE OR REPLACE TEMP VIEW GLOBAL_SCORING_EVENTS AS
 SELECT
   game_id,
@@ -363,7 +357,6 @@ WHERE is_scoring = 1
 ;
 
 -- ========== GLOBAL_PLAYER_GAME_OFFENSE ==========
--- Statistiche offensive minime per giocatore-partita basate su PBP arricchita.
 CREATE OR REPLACE TEMP VIEW GLOBAL_PLAYER_GAME_OFFENSE AS
 WITH shots AS (
   SELECT

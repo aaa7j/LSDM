@@ -1,10 +1,8 @@
-# src/etl/quality.py
 from pyspark.sql import SparkSession
 
 def summarize_row_counts(spark: SparkSession, tables: list[str]) -> dict[str, int]:
     """
-    Conta le righe delle viste passate senza usare spark.catalog.listTables(),
-    così evitiamo la dipendenza da HADOOP_HOME/winutils su Windows.
+    Conta le righe delle viste passate senza usare spark.catalog.listTables()
     """
     counts: dict[str, int] = {}
     for t in tables:
@@ -21,7 +19,7 @@ def summarize_row_counts(spark: SparkSession, tables: list[str]) -> dict[str, in
 def assert_primary_keys(spark: SparkSession, pk_map: dict[str, list[str]]) -> dict[str, bool]:
     """
     Verifica (best-effort) unicità chiavi primarie su viste logiche.
-    Esegue un GROUP BY COUNT(*)>1. Niente catalog/listTables.
+    Esegue un GROUP BY COUNT(*)>1.
     """
     results: dict[str, bool] = {}
     for table, keys in pk_map.items():

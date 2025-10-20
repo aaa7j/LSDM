@@ -296,7 +296,6 @@ def build_team_arena_resolved(spark, data_dir: str = "data"):
     if gg_mode is not None:
         res = res.join(gg_mode, "team_id", "left")
 
-    # ----------- Selezione finale (solo colonne esistenti) -----------
     res_cols = set(res.columns)
 
     def _coalesce_existing(candidates: list[str]):
@@ -312,7 +311,6 @@ def build_team_arena_resolved(spark, data_dir: str = "data"):
         cap_expr.alias("arena_capacity"),
     ).dropDuplicates(["team_id"])
 
-    # Materializza/cacha per velocizzare query successive
     res = res.cache()
     rows = res.count()
     res.createOrReplaceTempView("TEAM_ARENA_RESOLVED")
@@ -372,7 +370,7 @@ def main():
     print(">>> WAREHOUSE_DIR:", os.environ.get("WAREHOUSE_DIR"))
     print(">>> DATA_DIR:", os.environ.get("DATA_DIR"))
 
-    # Use import string when --reload (fixes the warning)
+    # Use import string when --reload
     if args.reload:
         uvicorn.run("scripts.search_service:app", host=args.host, port=args.port, reload=True, workers=1)
     else:

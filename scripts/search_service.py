@@ -1,5 +1,4 @@
-﻿# scripts/search_service.py
-from __future__ import annotations
+﻿from __future__ import annotations
 
 # --- In-memory suggest globals & helpers ---
 import re
@@ -25,19 +24,18 @@ from pyspark.ml.evaluation import BinaryClassificationEvaluator
 
 from src.search.engine import run_query
 import src.search.engine as search_engine
-# (analytics training helpers are not used directly here; kept in scripts)
 
-import json  # (se usi risposte debug)
+import json  
 
-_MEM_PLAYERS: List[dict] = []  # list of dicts
-_MEM_TEAMS: List[dict] = []    # list of dicts
+_MEM_PLAYERS: List[dict] = []  
+_MEM_TEAMS: List[dict] = []    
 _STANDINGS_CACHE = {}
 _STANDINGS_TTL_SECONDS = int(os.environ.get("STANDINGS_TTL_SECONDS", "600"))
 STANDINGS_CACHE_DIR = os.environ.get("STANDINGS_CACHE_DIR", os.path.join("metadata", "cache", "standings"))
 
 # --- Lightweight in-memory caches to speed up entity endpoints ---
 _ENTITY_CACHE = {}
-_ENTITY_TTL_SECONDS = int(os.environ.get("ENTITY_TTL_SECONDS", "600"))  # 10 minuti
+_ENTITY_TTL_SECONDS = int(os.environ.get("ENTITY_TTL_SECONDS", "600"))  
 
 # Preloaded CSV maps (read once at startup)
 _TEAM_DETAILS_BY_ID: Dict[str, dict] = {}
@@ -120,9 +118,7 @@ def _build_mem_indexes(spark: SparkSession):
         print(f"[WARN] Could not build _MEM_TEAMS: {e}")
         _MEM_TEAMS = []
 
-# --------------------------
 # Startup helpers: preload CSVs and add GZip
-# --------------------------
 
 def _preload_team_csvs():
     """Load team CSVs once into in-memory dicts to avoid per-request IO.
@@ -515,7 +511,7 @@ def _mk_spark() -> SparkSession:
         # Avoid failures on legitimate self-joins where all columns are qualified
         .config("spark.sql.analyzer.failAmbiguousSelfJoin", "false")
     )
-    # Respect SPARK_LOCAL_DIRS if provided (Windows temp location)
+    # Respect SPARK_LOCAL_DIRS if provided 
     local_dirs = os.environ.get("SPARK_LOCAL_DIRS")
     if local_dirs:
         builder = builder.config("spark.local.dir", local_dirs)
@@ -599,7 +595,6 @@ def _materialize_team_conference(spark: SparkSession, *, persist: bool | None = 
         )
     )
 
-    # normalizza: togli parole "conference"/"division", tiene solo lettere, lowercase
     def _norm_letters(col):
         return F_.lower(
             F_.trim(
@@ -1097,7 +1092,7 @@ def _on_startup():
         print(f"[OK] In-memory suggest indexes ready (players={len(_MEM_PLAYERS)}, teams={len(_MEM_TEAMS)})")
     except Exception as e:
         print(f"[WARN] Could not build in-memory indexes: {e}")
-    # Load model if present; otherwise keep unavailable (no training here)
+    # Load model if present; otherwise keep unavailable
     try:
         model_path_ok = os.path.isdir(MODEL_DIR) and os.path.isdir(os.path.join(MODEL_DIR, "stages"))
         retrain = os.environ.get("RETRAIN_OUTCOME", "0") in ["1","true","yes"]
@@ -1116,7 +1111,6 @@ def _on_startup():
                 print(f"[WARN] Outcome model not available.")
     except Exception as e:
         print(f"[WARN] Outcome model load/train failed: {e}")
-    # (legacy training block removed: serving is load-only)
 
     # Prewarm standings cache asynchronously (latest season) for faster first paint
     try:
@@ -1247,7 +1241,7 @@ def suggest(
         pass
     try:
         if ent == 'team':
-            df = search_engine.candidate_teams(spark, q2, limit=limit)  # noqa: SLF001
+            df = search_engine.candidate_teams(spark, q2, limit=limit) 
             df2 = (df
                    .select(
                        F.lit('team').alias('_entity'),
@@ -1259,7 +1253,7 @@ def suggest(
                    ))
             rows = [r.asDict(recursive=True) for r in df2.collect()]
         elif ent == 'player':
-            df = search_engine.candidate_players(spark, q2, limit=limit)  # noqa: SLF001
+            df = search_engine.candidate_players(spark, q2, limit=limit) 
             df2 = (df
                    .select(
                        F.lit('player').alias('_entity'),
@@ -1271,7 +1265,7 @@ def suggest(
                    ))
             rows = [r.asDict(recursive=True) for r in df2.collect()]
         elif ent == 'game':
-            df = search_engine.candidate_games(spark, q2, limit=limit)  # noqa: SLF001
+            df = search_engine.candidate_games(spark, q2, limit=limit)  
             df2 = (df.select(
                 F.lit('game').alias('_entity'),
                 F.col('_score'),
@@ -1292,7 +1286,7 @@ def suggest(
 
             def pull_teams() -> list[dict]:
                 try:
-                    tdf = search_engine.candidate_teams(spark, q2, limit=per)  # noqa: SLF001
+                    tdf = search_engine.candidate_teams(spark, q2, limit=per) 
                     tdf2 = tdf.select(
                         F.lit('team').alias('_entity'),
                         F.col('_score'),
@@ -1307,7 +1301,7 @@ def suggest(
 
             def pull_players() -> list[dict]:
                 try:
-                    pdf = search_engine.candidate_players(spark, q2, limit=per)  # noqa: SLF001
+                    pdf = search_engine.candidate_players(spark, q2, limit=per)  
                     pdf2 = pdf.select(
                         F.lit('player').alias('_entity'), F.col('_score'),
                         F.col('player_id').cast('string').alias('_id'),
@@ -1320,7 +1314,7 @@ def suggest(
                 if not _looks_game_query(q2):
                     return []
                 try:
-                    gdf = search_engine.candidate_games(spark, q2, limit=max(3, limit//3))  # noqa: SLF001
+                    gdf = search_engine.candidate_games(spark, q2, limit=max(3, limit//3))
                     gdf2 = gdf.select(
                         F.lit('game').alias('_entity'),
                         F.col('_score'),
@@ -1350,7 +1344,7 @@ def suggest(
         rows = []
 
     # Popularity-aware re-ranking
-    # Fuzzy fallback if few/no rows (e.g., "michaek jordan")
+    # Fuzzy fallback if few/no rows 
     try:
         need_fuzzy = (not rows) or (len(rows) < max(3, limit // 3))
         if need_fuzzy:
@@ -1536,7 +1530,7 @@ def _resolve_team_id(token: str) -> Optional[int]:
     if cand:
         return int(cand[0][0])
 
-    # 4) Engine fallback (strongest): use the same candidate logic used by /suggest
+    # 4) Engine fallback: use the same candidate logic used by /suggest
     try:
         cdf = search_engine.candidate_teams(spark, tok, limit=1)  # type: ignore[arg-type]
         rows = cdf.select(F.col("_id")).limit(1).collect()
@@ -1632,14 +1626,6 @@ def predict(
     # Compute single-row expected_diff using TEAM_CUMAVG views (built during training)
     try:
         feats = _build_outcome_features_full(spark, int(home_id), int(away_id), cutoff)
-
-
-
-
-
-
-
-
     except Exception as e:
         return {"error": f"feature build failed: {e}"}
 
@@ -2341,7 +2327,7 @@ def _player_career_totals(spark: SparkSession, pid: int) -> dict:
             pass
     gp = (ev_any.select("game_id").distinct().count())
 
-    # Points via event types (no score delta requirement)
+    # Points via event types
     is_make = (F.col("t") == 1)
     is_three = F.lower(F.coalesce(F.col("hd"), F.col("vd"), F.col("nd"))).contains(F.lit("3pt")) | \
                F.lower(F.coalesce(F.col("hd"), F.col("vd"), F.col("nd"))).contains(F.lit("3-pt")) | \
@@ -2439,8 +2425,6 @@ def player_season_summary(pid: str):
     except Exception:
         return {"items": [], "career": {}, "error": "invalid player id"}
     tables = {t.name.upper() for t in spark.catalog.listTables()}
-    # Optionally prefer GLOBAL_PLAYER_STATS via env toggle; default disabled to avoid inflated data
-    # Revert: use parquet GLOBAL_PLAYER_STATS by default (previous behavior)
     use_gps = os.environ.get("USE_GLOBAL_PLAYER_STATS_FOR_SEASONS", "1").lower() in ["1","true","yes"]
     if use_gps and ("GLOBAL_PLAYER_STATS" in tables):
         try:
@@ -2898,7 +2882,7 @@ def entity_team(tid: str):
             rec["conference"]     = rec["conference"] or dd.get("conference")
             rec["division"]       = rec["division"] or dd.get("division")
 
-    # 3) TEAM_CONFERENCE (East/West affidabile)
+    # 3) TEAM_CONFERENCE
     try:
         if _table_exists("TEAM_CONFERENCE") and not rec.get("conference"):
             tc = spark.table("TEAM_CONFERENCE").alias("tc")

@@ -89,7 +89,7 @@ def _register_from_warehouse(spark: SparkSession, base: str) -> None:
         raise SystemExit(
             "Missing Parquet path: expected either 'global_scoring_events' or 'global_play_by_play'"
         )
-    # No caching here to avoid OOM on large PBP; we only read the needed columns
+    # No caching here to avoid OOM on large PBP;
 
 
 def main() -> None:

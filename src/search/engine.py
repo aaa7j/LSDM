@@ -1,10 +1,9 @@
-﻿# src/search/engine.py
-# -----------------------------------------------------------------------------
+﻿# -----------------------------------------------------------------------------
 # Motore di ricerca con typo-tolerance e ottimizzazioni di performance.
 # - Normalizzazione robusta *_n (lower/trim/alfanumerico)
 # - Fuzzy "guardato": Levenshtein solo su candidati (prefix/contains || guardie)
 # - Niente window per dedup: merge lato driver
-# - Top-K per entitÃ  + raccolta leggera
+# - Top-K per entità  + raccolta leggera
 # API compatibile con codice legacy:
 #   run_query(spark, q, top_n=..., limit=..., entity=...) -> (rows, meta)
 # -----------------------------------------------------------------------------
@@ -31,10 +30,7 @@ __all__ = [
     "run_query",
 ]
 
-# -----------------------------------------------------------------------------
 # Utils
-# -----------------------------------------------------------------------------
-
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 def tokenize(q: str) -> List[str]:
@@ -57,9 +53,8 @@ def _norm_col(c):
     # lower + trim + rimozione non alfanumerico (ASCII)
     return regexp_replace(lower(trim(c)), r"[^a-z0-9 ]", "")
 
-# -----------------------------------------------------------------------------
+
 # Normalizzazioni
-# -----------------------------------------------------------------------------
 
 def _ensure_player_name_columns(df: DataFrame) -> DataFrame:
     fn = _pick(df, "first_name", "FIRST_NAME")
@@ -94,12 +89,8 @@ def _ensure_team_name_columns(df: DataFrame) -> DataFrame:
           )
     return df
 
-# -----------------------------------------------------------------------------
 # Filtri & scoring
-# -----------------------------------------------------------------------------
-
 def _mk_like_any_for_token(cols: List[str], token: str):
-    # OR di contains; le colonne devono essere *_n
     if not token:
         return None
     cond = None
@@ -109,12 +100,7 @@ def _mk_like_any_for_token(cols: List[str], token: str):
     return cond
 
 def _guarded_min_levenshtein(fuzzy_cols: List[str], token: str, max_edits: int) -> F.Column:
-    """
-    Calcola min(levenshtein(col, token)) ma SOLO quando:
-      - stessa prima lettera (o col contiene token)  **oppure**
-      - |len(col) - len(token)| <= 2
-    Altrimenti usa un valore alto cosÃ¬ non passa il threshold.
-    """
+    # Calcola il min Levenshtein tra le colonne fuzzy_cols per il token,
     guards = []
     for fc in fuzzy_cols:
         same_first = (substring(col(fc), 1, 1) == lit(token[0])) if token else lit(False)
@@ -137,9 +123,7 @@ def _all_tokens_condition_fuzzy(
     fuzzy_cols: Optional[List[str]] = None,
     max_edits: int = 2
 ):
-    """
-    (contains su almeno una col) OR (guarded levenshtein <= max_edits) per ogni token, con AND tra i token.
-    """
+    
     if not tokens:
         return None
     fuzzy_cols = fuzzy_cols or cols
@@ -172,7 +156,6 @@ def _score_contains(df: DataFrame, tokens: List[str], full_col: str, last_col: s
     base = base.withColumn("_s_tok", tok_scores if tok_scores is not None else lit(0.0))
 
     lv = F.levenshtein(col(full_col), lit(fullq)).cast(IntegerType())
-    # bonus inverso LV, ma solo quando differenza di lunghezza non Ã¨ enorme
     inv = F.when(F.abs(length(col(full_col)) - lit(len(fullq))) <= lit(3),
                  F.greatest(lit(0.0), lit(25.0) - lv.cast(FloatType()))
                  ).otherwise(lit(0.0))
@@ -181,16 +164,12 @@ def _score_contains(df: DataFrame, tokens: List[str], full_col: str, last_col: s
     base = base.withColumn("_score", col("_s_prefix_full") + col("_s_last_prefix") + col("_s_tok") + col("_s_fuzzy_inv"))
     return base
 
-# -----------------------------------------------------------------------------
 # Players
-# -----------------------------------------------------------------------------
-
 def candidate_players(spark: SparkSession, q: str, limit: int = 10) -> DataFrame:
     tokens = tokenize(q)
     df = spark.table("GLOBAL_PLAYER")
     df = _ensure_player_name_columns(df)
 
-    # SOLO le colonne che servono fino al sort (riduce I/O)
     df = df.select(
         (col("PLAYER_ID") if "PLAYER_ID" in df.columns else col("player_id")).alias("PLAYER_ID"),
         "first_name", "last_name", "full_name",
@@ -202,21 +181,17 @@ def candidate_players(spark: SparkSession, q: str, limit: int = 10) -> DataFrame
     if cond is not None:
         df = df.where(cond)
 
-    # Fallback full-name aggiuntivo ma *guardato*
     if looks_like_person_query(tokens):
         fullq = " ".join(tokens)
-        # usa le stesse guardie per evitare LV pieno
         same_first = (substring(col("full_name_n"), 1, 1) == lit(fullq[0])) if fullq else lit(False)
         len_band   = (F.abs(length(col("full_name_n")) - lit(len(fullq))) <= lit(2))
         cond_full  = (F.when(same_first | len_band | col("full_name_n").contains(lit(fullq)),
                              F.levenshtein(col("full_name_n"), lit(fullq))
                              ).otherwise(lit(999)) <= lit(2))
-        # Applica davvero il filtro guardato (prima era no-op)
         df = df.where(cond_full)
 
     df = _score_contains(df, tokens, full_col="full_name_n", last_col="last_name_n")
 
-    # Evita sort globale pesante: riduci partizioni prima
     df = df.repartition(8)
     out = (df
            .orderBy(col("_score").desc(), col("last_name_n").asc(), col("first_name_n").asc())
@@ -230,10 +205,7 @@ def candidate_players(spark: SparkSession, q: str, limit: int = 10) -> DataFrame
            )
     return out
 
-# -----------------------------------------------------------------------------
 # Teams
-# -----------------------------------------------------------------------------
-
 def candidate_teams(spark: SparkSession, q: str, limit: int = 10) -> DataFrame:
     tokens = tokenize(q)
     has_global = any(t.name.upper() == "GLOBAL_TEAM" for t in spark.catalog.listTables())
@@ -266,10 +238,7 @@ def candidate_teams(spark: SparkSession, q: str, limit: int = 10) -> DataFrame:
            )
     return out
 
-# -----------------------------------------------------------------------------
 # Games
-# -----------------------------------------------------------------------------
-
 def candidate_games(spark: SparkSession, q: str, limit: int = 10) -> DataFrame:
     """Return game candidates filtered by team names/cities and dates.
 
@@ -372,9 +341,6 @@ def candidate_games(spark: SparkSession, q: str, limit: int = 10) -> DataFrame:
     )
     return out
 
-# -----------------------------------------------------------------------------
-# Fallback fuzzy aggressivo (players) â€” ancora utile ma con guardie
-# -----------------------------------------------------------------------------
 
 def fuzzy_players_suggest(spark: SparkSession, q: str, limit: int = 10) -> DataFrame:
     tokens = tokenize(q)
@@ -418,10 +384,7 @@ def fuzzy_players_suggest(spark: SparkSession, q: str, limit: int = 10) -> DataF
            )
     return out
 
-# -----------------------------------------------------------------------------
 # Raccolta e merge lato driver (niente window/shuffle)
-# -----------------------------------------------------------------------------
-
 def _collect_df_rows(df: DataFrame) -> List[Dict[str, Any]]:
     return [
         {
@@ -436,14 +399,12 @@ def _collect_df_rows(df: DataFrame) -> List[Dict[str, Any]]:
 def suggest_all(spark: SparkSession, q: str, limit: int = 10) -> List[Dict[str, Any]]:
     tokens = tokenize(q)
 
-    # prendi pochi risultati per entitÃ  e unisci lato driver
     out: List[Dict[str, Any]] = []
     try:
         out += _collect_df_rows(candidate_players(spark, q, limit=limit))
     except Exception:
         pass
 
-    # per alleggerire, mettiamo limiti minori agli altri
     try:
         out += _collect_df_rows(candidate_teams(spark, q, limit=max(5, limit // 3)))
     except Exception:
@@ -469,9 +430,8 @@ def suggest_all(spark: SparkSession, q: str, limit: int = 10) -> List[Dict[str, 
     ordered = sorted(best.values(), key=lambda x: (-(x.get("_score") or 0), x["title"]))
     return ordered[:limit]
 
-# -----------------------------------------------------------------------------
+
 # API backward-compatible
-# -----------------------------------------------------------------------------
 
 def run_query(
     spark: SparkSession,

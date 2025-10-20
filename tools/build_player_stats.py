@@ -38,8 +38,6 @@ spark = (
 
 # ---------- GAME → season fields (con season_type euristico) ----------
 game_raw = spark.read.parquet(os.path.join(WAREHOUSE, "global_game"))
-# Canonicalize game_id in the source game table to avoid duplicates caused by
-# whitespace / formatting inconsistencies.
 from pyspark.sql import functions as _F
 if 'game_id' in game_raw.columns:
     game_raw = game_raw.withColumn('game_id', _F.trim(_F.col('game_id').cast('string')))
@@ -71,7 +69,7 @@ base_game = (
             .dropDuplicates(["game_id"])
 )
 
-# 1) Se troviamo un campo nativo di tipo stagione in un parquet, usiamolo
+# Determina season_type per game_id
 season_type_from = None
 for name in ["global_game", "global_other_stats", "global_line_score"]:
     p = os.path.join(WAREHOUSE, name)
@@ -97,18 +95,13 @@ if season_type_from is not None:
                         F.when(F.col("season_type").isNull(), F.lit("Regular Season")).otherwise(F.col("season_type"))
                     ))
 else:
-    # 2) Fallback euristico ROBUSTO (finestra più stretta e pausa maggiore)
-    # Parametri (modificabili anche via env):
-    # We change RS detection to: window from mid-September to mid-April.
+    # 2) Altrimenti, euristica su base giornaliera per season_type
     THR_FACTOR = float(os.environ.get("RS_THR_FACTOR", "0.65"))  # threshold factor for "full day"
     THR_MIN    = int(os.environ.get("RS_THR_MIN", "9"))          # minimal full-day games
     THR_MAX    = int(os.environ.get("RS_THR_MAX", "14"))         # maximal threshold
     GAP_MIN    = int(os.environ.get("RS_GAP_MIN", "2"))          # require >= 2 days pause after last regular day
-    # RS start: mid-September (15 Sep)
     RS_START_MONTH = int(os.environ.get("RS_START_MONTH", "9"))
     RS_START_DAY   = int(os.environ.get("RS_START_DAY", "15"))
-    # RS last candidate window: up to mid-April (15 Apr). Additionally require
-    # the selected last day to be at least April 7 (to avoid very early season ends).
     RS_END_MONTH = int(os.environ.get("RS_END_MONTH", "4"))
     RS_END_DAY   = int(os.environ.get("RS_END_DAY", "15"))
     RS_LAST_MIN_MONTH = int(os.environ.get("RS_LAST_MIN_MONTH", "4"))
@@ -137,14 +130,7 @@ else:
     daily2 = daily2.withColumn("next_gday", F.lead("gday", 1).over(w))
     daily2 = daily2.withColumn("gap_days", F.datediff(F.col("next_gday"), F.col("gday")))
 
-    # helper per vincoli su data (replaced by RS start/end window logic below)
-
-    # candidati: giornata piena, tra metà settembre (start) e metà aprile (end),
-    # e pausa >= GAP_MIN dopo la giornata.
-    # Note: gday for the season end is in year (season_start + 1)
-    # Filter candidate days to months March/April and early-April window, then
-    # require gap_days >= GAP_MIN. We'll pick the max candidate per season and
-    # then require it to be at least April 7 (RS_LAST_MIN_DAY).
+    # candidati ultimo giorno RS: nella finestra di fine stagione
     in_end_window = (
         (F.month(F.col("gday")).between(3, RS_END_MONTH)) &
         (
@@ -188,15 +174,13 @@ else:
                 F.when(F.col("gdate") > F.col("rs_last_day").cast("timestamp"), "Playoffs")
                  .otherwise("Regular Season")
             )
-            # (opzionale) tagliare fuori giochi fuori finestra RS "forte":
-            # .where((F.col("gdate") >= F.col("rs_start_day").cast("timestamp")) &
-            #        (F.col("gdate") <= F.col("rs_last_day").cast("timestamp")))
             .drop("rs_last_day", "rs_start_day", "max_gpd", "min_gday", "thr_raw", "thr", "next_gday", "gap_days"))
 
 # colonne finali usate dal resto della pipeline
 game = game.select("game_id","season","season_start","season_type","home_team_id","away_team_id")
 
 game_u = game.dropDuplicates(["game_id"])  # una riga per game_id
+
 # ===================== SOURCING: BOX SCORE O PBP =====================
 def has(path): return os.path.exists(os.path.join(WAREHOUSE, path))
 use_box = has("global_other_stats")
@@ -252,7 +236,7 @@ if use_box:
         F.col(colmap["pts"]).cast("long").alias("pts"),
     )
 
-    # ✅ UNA RIGA per (game, player): se il box è per quarto/tempo, compattiamo
+    # UNA RIGA per (game_id, player_id)
     base_game = (
         per_row.groupBy("game_id","player_id")
         .agg(
@@ -277,7 +261,6 @@ else:
     if 'game_id' in pbp.columns:
         pbp = pbp.withColumn('game_id', F.trim(F.col('game_id').cast('string')))
 
-    # dedup robusto: (game_id, period, eventnum) se disponibile
     dedup_keys = [c for c in ["game_id","period","eventnum"] if c in pbp.columns]
     if dedup_keys:
         pbp = pbp.dropDuplicates(dedup_keys)
@@ -289,11 +272,7 @@ else:
     desc = F.coalesce("homedescription","visitordescription","neutraldescription")
     dl   = F.lower(desc)
 
-    # chiave evento per countDistinct (una per riga PBP reale)
-    # Use a deterministic event key: prefer eventnum when present, otherwise
-    # build a stable hash from period + event descriptions + player ids. Avoid
-    # using monotonically_increasing_id() because it's non-deterministic
-    # between runs/partitions and can prevent proper deduplication.
+    # Event unique key (evk) per dedup e counting
     desc_col = F.coalesce(F.col("homedescription"), F.col("visitordescription"), F.col("neutraldescription"), F.lit(""))
     evk = F.md5(F.concat_ws("|",
                            F.coalesce(F.col("period").cast("string"), F.lit("0")),
@@ -337,7 +316,7 @@ else:
         "t","evk","dl"
     )
 
-    # ✅ UNA RIGA per (game, player): aggrego su countDistinct(evk) e prendo FIRST(team_id)
+
     agg = (
         shooter.groupBy("game_id","player_id")
         .agg(
@@ -371,7 +350,7 @@ else:
         "pts", F.col("tpm")*3 + (F.col("fgm")-F.col("tpm"))*2 + F.col("ftm")
     )
 
-# ✅ “Airbag” finale: garantisci univocità per (game, player)
+# UNA RIGA per (game_id, player_id)
 base_game = (
     base_game
     .groupBy("game_id","player_id")
@@ -391,7 +370,6 @@ base_game = (
 # ------------ DA QUI: per-game → per-season SCORING tab ------------
 
 # 0) UNA SOLA RIGA per (game_id, player_id)
-#    Anche se base_game ha team_id/dupliche, riduciamo a per-game/per-player.
 per_game = (
     base_game
     .groupBy("game_id", "player_id")
@@ -409,21 +387,15 @@ per_game = (
     )
 )
 
-# 1) JOIN con una tabella game UNICA per game_id (no moltiplicazioni)
+# 1) JOIN con una tabella game UNICA per game_id 
 game_u = game.dropDuplicates(["game_id"])
 per_game = per_game.join(game_u, "game_id", "left")
 
-# Final safety: ensure exactly one row per (game_id, player_id) before
-# aggregating to season. This prevents any remaining duplicates from
-# inflating gp after joins.
+# 1a) GARANTISCI una riga per (game_id, player_id)
 if 'game_id' in per_game.columns and 'player_id' in per_game.columns:
     per_game = per_game.dropDuplicates(['game_id','player_id'])
 
-# Defensive filtering: alcuni snapshot possono contenere righe "team totals" o
-# righe con team_id al posto di player_id (es. 1610612749). Se è disponibile
-# la tabella GLOBAL_PLAYER nel warehouse, usiamola per whitelistare player_id
-# validi; altrimenti applichiamo una soglia empirica per escludere id troppo
-# grandi che sono quasi certamente team ids.
+# 1b) FILTRO giocatori valido usando GLOBAL_PLAYER whitelist, se disponibile
 players_path = os.path.join(WAREHOUSE, "global_player")
 if os.path.exists(players_path):
     try:
@@ -473,8 +445,5 @@ if anoms.count() > 0:
 else:
     print("[INFO] no anomalies (gp>82) found")
 
-# ------------ FINE BLOCCO SCORING ------------
-
-# (opzionale) se vuoi tenere anche le altre tabelle che già scrivevi, lasciale sotto
 
 spark.stop(); print("[DONE]")

@@ -1,4 +1,3 @@
-# src/etl/read_sources.py
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
@@ -12,7 +11,7 @@ def get_spark(app_name="BasketballAnalytics"):
         .master("local[*]")
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.local.dir", "C:/spark-tmp")
-        .config("hadoop.tmp.dir", "C:/spark-tmp")  # potrebbe dare warning,  ok
+        .config("hadoop.tmp.dir", "C:/spark-tmp")  
         .config("spark.sql.warehouse.dir", "C:/spark-tmp/wh")
         .config("spark.driver.extraJavaOptions", "-Djava.io.tmpdir=C:/spark-tmp -Dfile.encoding=UTF-8")
         .config("spark.executor.extraJavaOptions", "-Djava.io.tmpdir=C:/spark-tmp -Dfile.encoding=UTF-8")
@@ -29,7 +28,6 @@ def get_spark(app_name="BasketballAnalytics"):
     hconf.set("fs.file.impl.disable.cache", "true")
     return spark
 
-# -----------------------------------------------------------
 
 def _read_csv(spark, path):
     return (
@@ -381,11 +379,9 @@ def register_sources(spark, base="data"):
             return (_safe_int(h) if h is not None else None,
                     _safe_int(a) if a is not None else None)
 
-        # I dump spesso NON hanno PTS totali in questo file -> lasciamo NULL
         pts_h, pts_a = (None, None)
         # REB: prefer team_rebounds
         reb_h, reb_a = pick("team_rebounds_home", "team_rebounds_away")
-        # AST/STL/BLK: spesso assenti in questo file -> NULL
         ast_h, ast_a = (None, None)
         stl_h, stl_a = (None, None)
         blk_h, blk_a = (None, None)

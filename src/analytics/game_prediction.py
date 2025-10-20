@@ -1,4 +1,3 @@
-# src/analytics/outcome.py
 # -----------------------------------------------------------------------------
 # Pre-game outcome prediction (win_home) using team rolling averages.
 # - Costruisce viste di risultato gara
@@ -19,10 +18,7 @@ from pyspark.ml.classification import LogisticRegression
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
 
 
-# =========================
 # 1) GAME RESULT VIEWS
-# =========================
-
 def build_game_result_views(spark: SparkSession) -> Tuple[DataFrame, DataFrame]:
     """
     Crea due viste logiche d'appoggio:
@@ -41,8 +37,6 @@ def build_game_result_views(spark: SparkSession) -> Tuple[DataFrame, DataFrame]:
             F.sum(F.when(F.col("team_id") == F.first("team_id").over(Window.partitionBy("game_id").orderBy("team_id")),
                         F.col("points")).otherwise(F.lit(0))).alias("sum_points_any")  # dummy agg
         )
-        # In pratica, se i final score sono mancanti, è meglio fidarsi di GLOBAL_GAME:
-        # qui lasciamo i NULL; la label verrà esclusa in training dove mancante.
         pass
 
     game_points = g.selectExpr(
@@ -58,7 +52,7 @@ def build_game_result_views(spark: SparkSession) -> Tuple[DataFrame, DataFrame]:
                    .withColumn("label",
                                F.when(F.col("home_pts") > F.col("away_pts"), F.lit(1.0))
                                 .when(F.col("home_pts") < F.col("away_pts"), F.lit(0.0))
-                                .otherwise(F.lit(None)))  # pareggi improbabili nella NBA -> NULL
+                                .otherwise(F.lit(None)))  
                    )
 
     game_points.createOrReplaceTempView("GAME_POINTS")
@@ -66,9 +60,7 @@ def build_game_result_views(spark: SparkSession) -> Tuple[DataFrame, DataFrame]:
     return game_points, game_result
 
 
-# =========================
 # 2) PREGAME FEATURES
-# =========================
 
 # Colonne base disponibili in GLOBAL_OTHER_STATS per team/game
 BASE_STATS: List[str] = [
@@ -186,10 +178,7 @@ def build_pregame_features(
     return out
 
 
-# =========================
 # 3) TRAIN / EVAL
-# =========================
-
 def _train_test_split_time(df: DataFrame, frac_train: float = 0.8) -> Tuple[DataFrame, DataFrame]:
     """
     Split temporale: usa la data per separare train/test (80/20 di default).
@@ -241,10 +230,7 @@ def train_pregame_outcome_model(
     return model, metrics, preds
 
 
-# =========================
 # 4) PREDIRE UN MATCH "OGGI"
-# =========================
-
 def team_form_at(
     spark: SparkSession,
     team_id: int,
@@ -313,10 +299,7 @@ def build_match_features(
     return feat.select("home_team_id", "away_team_id", *[f"diff_{c}" for c in BASE_STATS])
 
 
-# =========================
 # 5) BASELINE: CUMULATIVE AVERAGE MODEL (opzionale)
-# =========================
-
 def ensure_prediction_views(spark: SparkSession) -> None:
     """
     Crea una vista semplice GAME_RESULT (se non esiste già) per funzioni baseline.
@@ -391,10 +374,7 @@ def train_cumavg_model(spark: SparkSession) -> Tuple[PipelineModel, Dict[str, fl
     return model, metrics, preds
 
 
-# =========================
 # 6) SAVE / LOAD HELPERS
-# =========================
-
 def save_pipeline_model(model: PipelineModel, path: str) -> None:
     model.write().overwrite().save(path)
 
