@@ -1,7 +1,16 @@
 import argparse
+import os
+import sys
+import pathlib
+
+# Ensure project root is importable (allow running from any CWD)
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.etl.read_sources import get_spark, register_sources
 from src.etl.gav import execute_gav_sql
+from src.etl.warehouse import register_from_warehouse
 from src.analytics.player_metrics import (
     player_scoring_summary,
     top_scorers,
@@ -16,7 +25,8 @@ from src.analytics.game_prediction import (
 
 def main():
     parser = argparse.ArgumentParser(description="Analytics workflows on the GAV schema")
-    parser.add_argument("--base", default="csv", help="Base folder with Kaggle CSV files")
+    parser.add_argument("--base", default="data", help="CSV base folder (used only if --warehouse is not set)")
+    parser.add_argument("--warehouse", default=None, help="Parquet warehouse with GLOBAL_* subfolders (preferred)")
     parser.add_argument(
         "--top-n",
         type=int,
@@ -54,8 +64,11 @@ def main():
     args = parser.parse_args()
 
     spark = get_spark("BasketballAnalytics-Analytics")
-    register_sources(spark, base=args.base)
-    execute_gav_sql(spark)
+    if args.warehouse:
+        register_from_warehouse(spark, base_dir=args.warehouse)
+    else:
+        register_sources(spark, base=args.base)
+        execute_gav_sql(spark)
 
     print("=== Player scoring leaders ===")
     top_df = top_scorers(spark, limit=args.top_n)

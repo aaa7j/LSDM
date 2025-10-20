@@ -49,8 +49,21 @@ def _scoring_events(pbp: DataFrame) -> DataFrame:
 def player_scoring_summary(spark: SparkSession) -> DataFrame:
     """Compute aggregate scoring metrics per player."""
 
-    pbp = spark.table("GLOBAL_PLAY_BY_PLAY")
-    scoring = _scoring_events(pbp)
+    # Prefer precomputed scoring events if available
+    tables = {t.name.upper() for t in spark.catalog.listTables()}
+    if "GLOBAL_SCORING_EVENTS" in tables:
+        scoring = (
+            spark.table("GLOBAL_SCORING_EVENTS")
+            .where(F.col("player_id").isNotNull() & (F.col("player_id").cast("int") > 0))
+            .select(
+                F.col("player_id").cast("int").alias("player1_id"),
+                "game_id",
+                "points",
+            )
+        )
+    else:
+        pbp = spark.table("GLOBAL_PLAY_BY_PLAY")
+        scoring = _scoring_events(pbp).where(F.col("player1_id").cast("int") > 0)
 
     summary = (
         scoring.groupBy("player1_id")
@@ -65,7 +78,7 @@ def player_scoring_summary(spark: SparkSession) -> DataFrame:
     )
 
     players = spark.table("GLOBAL_PLAYER").select(
-        F.col("player_id").alias("player1_id"),
+        F.col("player_id").cast("int").alias("player1_id"),
         "full_name",
         "team_id",
         "position",

@@ -67,7 +67,7 @@ def main():
 
     if args.validate:
         summarize_row_counts(spark, GLOBAL_VIEWS)
-        pk_results = assert_primary_keys(spark, GLOBAL_PRIMARY_KEYS)
+        pk_results = assert_primary_keys(spark, {k: list(v) for k, v in GLOBAL_PRIMARY_KEYS.items()})
         failed = [table for table, ok in pk_results.items() if not ok]
         if failed:
             raise SystemExit(f"Primary key violations detected: {failed}")

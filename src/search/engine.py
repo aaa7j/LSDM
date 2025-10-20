@@ -211,7 +211,8 @@ def candidate_players(spark: SparkSession, q: str, limit: int = 10) -> DataFrame
         cond_full  = (F.when(same_first | len_band | col("full_name_n").contains(lit(fullq)),
                              F.levenshtein(col("full_name_n"), lit(fullq))
                              ).otherwise(lit(999)) <= lit(2))
-        df = df.where(cond_full | lit(True))
+        # Applica davvero il filtro guardato (prima era no-op)
+        df = df.where(cond_full)
 
     df = _score_contains(df, tokens, full_col="full_name_n", last_col="last_name_n")
 
@@ -292,17 +293,43 @@ def candidate_games(spark: SparkSession, q: str, limit: int = 10) -> DataFrame:
           .join(t, col("g.home_team_id") == col("t.tid"), "left")
           .join(u, col("g.away_team_id") == col("u.tid"), "left"))
 
-    # Date filter if present in query
+    # Date filter if present in query (supports YYYY, YYYY-MM, YYYY-MM-DD, 'Mar 2023', '2023/3')
     date_txt = " ".join(tokens)
+    applied_date_filter = False
+    # 1) ISO-like patterns
     ymd = re.findall(r"\b(20\d{2}|19\d{2})(?:[-/](\d{1,2})(?:[-/](\d{1,2}))?)?\b", date_txt)
     if ymd:
         y, m, d = ymd[0][0], (ymd[0][1] or ""), (ymd[0][2] or "")
         if d:
             df = df.where(date_format(col("g.game_date"), "yyyy-MM-dd") == f"{int(y):04d}-{int(m):02d}-{int(d):02d}")
+            applied_date_filter = True
         elif m:
             df = df.where(date_format(col("g.game_date"), "yyyy-MM") == f"{int(y):04d}-{int(m):02d}")
+            applied_date_filter = True
         else:
             df = df.where(date_format(col("g.game_date"), "yyyy") == f"{int(y):04d}")
+            applied_date_filter = True
+    # 2) Month-name + year (e.g., 'Mar 2023')
+    if not applied_date_filter:
+        mon_map = {
+            'jan':1,'january':1,
+            'feb':2,'february':2,
+            'mar':3,'march':3,
+            'apr':4,'april':4,
+            'may':5,
+            'jun':6,'june':6,
+            'jul':7,'july':7,
+            'aug':8,'august':8,
+            'sep':9,'sept':9,'september':9,
+            'oct':10,'october':10,
+            'nov':11,'november':11,
+            'dec':12,'december':12,
+        }
+        toks = tokens
+        year = next((int(t) for t in toks if t.isdigit() and len(t) == 4), None)
+        mon = next((mon_map.get(t, None) for t in toks if t in mon_map), None)
+        if year and mon:
+            df = df.where(date_format(col("g.game_date"), "yyyy-MM") == f"{year:04d}-{mon:02d}")
 
     # Text tokens against team names/cities (drop matchup stopwords)
     stop = {"vs", "v", "at"}

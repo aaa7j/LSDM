@@ -248,6 +248,25 @@ def register_sources(spark, base="data"):
         print("Registered view 'game' (standardized)")
         registered.append("game")
 
+    # ---------------------- TEAM_DETAILS (standardized) ----------------------
+    # Espone: TEAM_ID, ARENA, HEADCOACH (opzionali)
+    if _exists(base, "team_details"):
+        df = _read_csv(spark, f"{base}/team_details.csv")
+        c = _cols(df)
+        exprs = []
+        if "team_id" in c:
+            exprs.append(F.col("team_id").cast("int").alias("TEAM_ID"))
+        elif "id" in c:
+            exprs.append(F.col("id").cast("int").alias("TEAM_ID"))
+        else:
+            exprs.append(F.lit(None).cast("int").alias("TEAM_ID"))
+        exprs.append(((F.col("arena") if "arena" in c else F.lit(None)).cast("string")).alias("ARENA"))
+        exprs.append(((F.col("headcoach") if "headcoach" in c else F.lit(None)).cast("string")).alias("HEADCOACH"))
+
+        df.select(*exprs).createOrReplaceTempView("team_details")
+        print("Registered view 'team_details' (standardized)")
+        registered.append("team_details")
+
     # -------------------- GAME_SUMMARY (standardized) --------------------
     # Espone: GAME_ID, GAME_STATUS_TEXT, PTS_home, PTS_away, PERIODS
     if _exists(base, "game_summary"):

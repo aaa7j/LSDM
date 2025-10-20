@@ -6,8 +6,9 @@ Outputs (Parquet by default) under --out (default: metadata/popularity):
  - teams/    with columns: team_id (string), score (double), cnt (long)
 
 Signals used:
- - Players: recency‑weighted scoring events from GLOBAL_PLAY_BY_PLAY joined to
-   GLOBAL_GAME (half‑life configurable), plus raw participation count.
+ - Players: recency‑weighted scoring events joined to GLOBAL_GAME.
+   Prefers GLOBAL_SCORING_EVENTS (from GAV). Falls back to computing on
+   GLOBAL_PLAY_BY_PLAY if scoring events parquet is not available.
  - Teams: recency‑weighted game appearances from GLOBAL_GAME.
 
 Usage:
@@ -65,17 +66,30 @@ def _get_spark(driver_mem: str = "4g", shuffle_parts: int = 8) -> SparkSession:
 
 
 def _register_from_warehouse(spark: SparkSession, base: str) -> None:
-    req = {
+    base = os.fspath(base)
+    # Always required
+    required = {
         "GLOBAL_PLAYER": "global_player",
         "GLOBAL_GAME": "global_game",
-        "GLOBAL_PLAY_BY_PLAY": "global_play_by_play",
     }
-    for view, sub in req.items():
+    for view, sub in required.items():
         path = os.path.join(base, sub)
         if not os.path.isdir(path):
             raise SystemExit(f"Missing Parquet path: {path}")
         spark.read.parquet(path).createOrReplaceTempView(view)
-    # No caching here to avoid OOM on large PBP; we only read the needed column
+
+    # Prefer precomputed scoring events, else fall back to raw PBP
+    se_path = os.path.join(base, "global_scoring_events")
+    pbp_path = os.path.join(base, "global_play_by_play")
+    if os.path.isdir(se_path):
+        spark.read.parquet(se_path).createOrReplaceTempView("GLOBAL_SCORING_EVENTS")
+    elif os.path.isdir(pbp_path):
+        spark.read.parquet(pbp_path).createOrReplaceTempView("GLOBAL_PLAY_BY_PLAY")
+    else:
+        raise SystemExit(
+            "Missing Parquet path: expected either 'global_scoring_events' or 'global_play_by_play'"
+        )
+    # No caching here to avoid OOM on large PBP; we only read the needed columns
 
 
 def main() -> None:
@@ -94,7 +108,7 @@ def main() -> None:
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    # Players: count of play-by-play events keyed by player1_id
+    # Players: recency-weighted scoring contributions keyed by player_id
     # --- recency window using GLOBAL_GAME ---
     baseg = spark.table("GLOBAL_GAME").select(
         F.col("game_id").cast("string").alias("game_id"),
@@ -111,42 +125,71 @@ def main() -> None:
     if cutoff is not None:
         game = game.where(F.col("game_date") >= F.lit(cutoff))
 
-    # --- player popularity: recency‑weighted points/participation ---
-    pbp = spark.table("GLOBAL_PLAY_BY_PLAY").select(
-        F.col("game_id").cast("string").alias("game_id"),
-        F.col("eventnum").cast("int").alias("eventnum"),
-        F.col("score").alias("score"),
-        F.col("player1_id").cast("string").alias("p1"),
-        F.col("player2_id").cast("string").alias("p2"),
-        F.col("player3_id").cast("string").alias("p3"),
-    )
-    pbp = pbp.join(game, on="game_id", how="inner")
-    # parse score and compute per‑event points
-    pbp = pbp.withColumn("score_clean", F.regexp_replace("score", "\\s+", ""))
-    pbp = pbp.withColumn("sa", F.split("score_clean", "-"))
-    pbp = pbp.withColumn("h", F.when(F.size("sa") == 2, F.element_at("sa", 1).cast("int")))
-    pbp = pbp.withColumn("a", F.when(F.size("sa") == 2, F.element_at("sa", 2).cast("int")))
-    w = Window.partitionBy("game_id").orderBy(F.col("eventnum").asc())
-    pbp = pbp.withColumn("ph", F.coalesce(F.lag("h").over(w), F.lit(0)))
-    pbp = pbp.withColumn("pa", F.coalesce(F.lag("a").over(w), F.lit(0)))
-    pbp = pbp.withColumn("delta", F.greatest(F.col("h")-F.col("ph"), F.col("a")-F.col("pa")))
-    pbp = pbp.withColumn("points", F.when(F.col("delta").isNotNull(), F.col("delta")).otherwise(F.lit(0)))
-
     # recency weight with half‑life
     ln2 = math.log(2.0)
     half = max(1, int(args.half_life_days))
     days_old = F.datediff(F.lit(maxd), F.col("game_date")) if maxd is not None else F.lit(0)
     weight = F.exp(F.lit(-ln2) * (days_old / F.lit(float(half))))
-    pbp = pbp.withColumn("w", weight)
 
-    # explode participants: credit points to p1; small credit for p2/p3 participation
-    p1 = pbp.where(F.col("p1").isNotNull()).select(F.col("p1").alias("player_id"), (F.col("w")*(F.col("points")+F.lit(0.5))).alias("score"))
-    p2 = pbp.where(F.col("p2").isNotNull()).select(F.col("p2").alias("player_id"), (F.col("w")*F.lit(0.25)).alias("score"))
-    p3 = pbp.where(F.col("p3").isNotNull()).select(F.col("p3").alias("player_id"), (F.col("w")*F.lit(0.25)).alias("score"))
-    ppl = p1.unionByName(p2).unionByName(p3)
-    players = (ppl.groupBy("player_id")
-               .agg(F.sum("score").alias("score"), F.count(F.lit(1)).alias("cnt"))
-               .coalesce(1))
+    tables = {t.name.upper() for t in spark.catalog.listTables()}
+    if "GLOBAL_SCORING_EVENTS" in tables:
+        # Use precomputed scoring events: faster and more robust
+        ev = spark.table("GLOBAL_SCORING_EVENTS").select(
+            F.col("game_id").cast("string").alias("game_id"),
+            F.col("player_id").cast("string").alias("p1"),
+            F.col("assist_id").cast("string").alias("ast"),
+            F.col("points").cast("int").alias("points"),
+        )
+        ev = ev.join(game, on="game_id", how="inner").withColumn("w", weight)
+        p1 = ev.where(F.col("p1").isNotNull()).select(
+            F.col("p1").alias("player_id"), (F.col("w") * (F.col("points") + F.lit(0.5))).alias("score")
+        )
+        a1 = ev.where(F.col("ast").isNotNull()).select(
+            F.col("ast").alias("player_id"), (F.col("w") * F.lit(0.25)).alias("score")
+        )
+        ppl = p1.unionByName(a1)
+        players = (
+            ppl.groupBy("player_id").
+            agg(F.sum("score").alias("score"), F.count(F.lit(1)).alias("cnt")).
+            coalesce(1)
+        )
+    else:
+        # Fallback to raw PBP (older path): compute per-event points then credit
+        pbp = spark.table("GLOBAL_PLAY_BY_PLAY").select(
+            F.col("game_id").cast("string").alias("game_id"),
+            F.col("eventnum").cast("int").alias("eventnum"),
+            F.col("score").alias("score"),
+            F.col("player1_id").cast("string").alias("p1"),
+            F.col("player2_id").cast("string").alias("p2"),
+            F.col("player3_id").cast("string").alias("p3"),
+        )
+        pbp = pbp.join(game, on="game_id", how="inner")
+        pbp = pbp.withColumn("score_clean", F.regexp_replace("score", "\\s+", ""))
+        pbp = pbp.withColumn("sa", F.split("score_clean", "-"))
+        pbp = pbp.withColumn("h", F.when(F.size("sa") == 2, F.element_at("sa", 1).cast("int")))
+        pbp = pbp.withColumn("a", F.when(F.size("sa") == 2, F.element_at("sa", 2).cast("int")))
+        w = Window.partitionBy("game_id").orderBy(F.col("eventnum").asc())
+        pbp = pbp.withColumn("ph", F.coalesce(F.lag("h").over(w), F.lit(0)))
+        pbp = pbp.withColumn("pa", F.coalesce(F.lag("a").over(w), F.lit(0)))
+        pbp = pbp.withColumn("delta", F.greatest(F.col("h") - F.col("ph"), F.col("a") - F.col("pa")))
+        pbp = pbp.withColumn("points", F.when(F.col("delta").isNotNull(), F.col("delta")).otherwise(F.lit(0)))
+        pbp = pbp.withColumn("w", weight)
+
+        p1 = pbp.where(F.col("p1").isNotNull()).select(
+            F.col("p1").alias("player_id"), (F.col("w") * (F.col("points") + F.lit(0.5))).alias("score")
+        )
+        p2 = pbp.where(F.col("p2").isNotNull()).select(
+            F.col("p2").alias("player_id"), (F.col("w") * F.lit(0.25)).alias("score")
+        )
+        p3 = pbp.where(F.col("p3").isNotNull()).select(
+            F.col("p3").alias("player_id"), (F.col("w") * F.lit(0.25)).alias("score")
+        )
+        ppl = p1.unionByName(p2).unionByName(p3)
+        players = (
+            ppl.groupBy("player_id").
+            agg(F.sum("score").alias("score"), F.count(F.lit(1)).alias("cnt")).
+            coalesce(1)
+        )
     players.write.mode("overwrite").parquet(str(out / "players"))
 
     # Teams: count of games appearances (home+away)

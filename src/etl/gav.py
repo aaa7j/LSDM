@@ -12,6 +12,8 @@ GLOBAL_VIEWS = [
     "GLOBAL_TEAM",
     "GLOBAL_GAME",
     "GLOBAL_PLAY_BY_PLAY",
+    "GLOBAL_SCORING_EVENTS",
+    "GLOBAL_PLAYER_GAME_OFFENSE",
     "GLOBAL_LINE_SCORE",
     "GLOBAL_OTHER_STATS",
     "GLOBAL_OFFICIAL",
@@ -26,6 +28,8 @@ GLOBAL_PRIMARY_KEYS = {
     "GLOBAL_TEAM": ("team_id",),
     "GLOBAL_GAME": ("game_id",),
     "GLOBAL_PLAY_BY_PLAY": ("game_id", "eventnum"),
+    "GLOBAL_SCORING_EVENTS": ("game_id", "eventnum"),
+    "GLOBAL_PLAYER_GAME_OFFENSE": ("game_id", "player_id"),
     "GLOBAL_LINE_SCORE": ("game_id", "team_id", "period"),
     "GLOBAL_OTHER_STATS": ("game_id", "team_id"),
     "GLOBAL_OFFICIAL": ("official_id",),
@@ -39,6 +43,30 @@ def _default_sql_path() -> str:
     return os.path.join("src", "etl", "transform_gav.sql")
 
 
+def _split_sql_statements(raw: str) -> List[str]:
+    """Split SQL into executable statements.
+
+    - Strip single-line comments starting with '--' (remove the rest of the line)
+    - Then split by ';'
+    - Trim and drop empty fragments
+    """
+    cleaned_lines: List[str] = []
+    for line in raw.splitlines():
+        # Remove content after '--' (SQL single-line comment)
+        idx = line.find("--")
+        if idx != -1:
+            line = line[:idx]
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines)
+
+    frags = []
+    for chunk in cleaned.split(";"):
+        stmt = chunk.strip()
+        if stmt:
+            frags.append(stmt)
+    return frags
+
+
 def execute_gav_sql(spark, sql_path: Optional[str] = None) -> List[str]:
     """Execute the SQL statements defining the GLOBAL_* views.
 
@@ -50,9 +78,17 @@ def execute_gav_sql(spark, sql_path: Optional[str] = None) -> List[str]:
         raw = handle.read()
 
     executed: List[str] = []
-    for statement in [s.strip() for s in raw.split(";") if s.strip()]:
-        spark.sql(statement)
-        executed.append(statement)
+    for idx, statement in enumerate(_split_sql_statements(raw), start=1):
+        try:
+            spark.sql(statement)
+            executed.append(statement)
+        except Exception:
+            # Print a short preview to aid debugging, then re-raise
+            preview = statement.replace("\n", " ")
+            if len(preview) > 160:
+                preview = preview[:157] + "..."
+            print(f"[GAV] SQL error on statement #{idx}: {preview}")
+            raise
 
     return executed
 
@@ -69,6 +105,8 @@ def save_global_views(spark, out_dir: str, views: Optional[Iterable[str]] = None
         null_columns = [field.name for field in df.schema if field.dataType.simpleString() == "void"]
         for column in null_columns:
             df = df.withColumn(column, F.lit(None).cast("string"))
+        if null_columns:
+            print(f"[WARN] {view} has NullType columns coerced to string: {', '.join(null_columns)}")
         destination = os.path.join(out_dir, view.lower())
         try:
             df.write.mode("overwrite").parquet(destination)

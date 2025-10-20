@@ -4,6 +4,7 @@ import streamlit as st
 
 from src.etl.read_sources import get_spark, register_sources
 from src.etl.gav import execute_gav_sql
+from src.etl.warehouse import register_from_warehouse
 from src.analytics.player_metrics import player_scoring_summary
 from src.analytics.game_prediction import build_game_feature_frame, train_outcome_model
 
@@ -11,10 +12,13 @@ from src.analytics.game_prediction import build_game_feature_frame, train_outcom
 st.set_page_config(page_title="Basketball Analytics", layout="wide")
 
 
-def init_session(base_dir: str):
+def init_session(use_warehouse: bool, base_dir: str, warehouse_dir: str):
     spark = get_spark("BasketballAnalytics-Dashboard")
-    register_sources(spark, base=base_dir)
-    execute_gav_sql(spark)
+    if use_warehouse:
+        register_from_warehouse(spark, base_dir=warehouse_dir)
+    else:
+        register_sources(spark, base=base_dir)
+        execute_gav_sql(spark)
     return spark
 
 
@@ -24,13 +28,17 @@ def main():
         "Explore integrated basketball data powered by the GAV schema and PySpark analytics."
     )
 
-    base_dir = st.sidebar.text_input("CSV base directory", value="csv")
+    st.sidebar.subheader("Data source")
+    use_wh = st.sidebar.checkbox("Use Parquet warehouse (recommended)", value=True)
+    warehouse_dir = st.sidebar.text_input("Warehouse directory", value="warehouse")
+    base_dir = st.sidebar.text_input("CSV base directory (fallback)", value="data")
 
     if st.sidebar.button("Load data"):
         with st.spinner("Initializing Spark session and loading sources..."):
-            spark = init_session(base_dir)
+            spark = init_session(use_wh, base_dir, warehouse_dir)
             st.session_state["spark"] = spark
             st.session_state["base_dir"] = base_dir
+            st.session_state["warehouse_dir"] = warehouse_dir
         st.sidebar.success("Data loaded")
 
     if "spark" not in st.session_state:
