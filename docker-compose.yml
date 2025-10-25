@@ -1,0 +1,33 @@
+services:
+  trino:
+    image: trinodb/trino:latest
+    container_name: trino
+    ports:
+      - "8080:8080"
+    volumes:
+      # Core configs
+      - ./trino/etc/config.properties:/etc/trino/config.properties:ro
+      - ./trino/etc/jvm.config:/etc/trino/jvm.config:ro
+      # Use a Docker-specific node.properties so the data dir path is Linux-style
+      - ./trino/etc/node.docker.properties:/etc/trino/node.properties:ro
+      # Mount all catalogs (Mongo/Postgres/etc.)
+      - ./trino/etc/catalog:/etc/trino/catalog:ro
+      # Persistent data dir inside the container mapped to local folder
+      - ./trino/data:/data
+    restart: unless-stopped
+
+  trino-worker:
+    image: trinodb/trino:latest
+    container_name: trino-worker
+    depends_on:
+      - trino
+    volumes:
+      - ./trino/etc/config.worker.properties:/etc/trino/config.properties:ro
+      - ./trino/etc/jvm.config:/etc/trino/jvm.config:ro
+      - ./trino/etc/node.worker.properties:/etc/trino/node.properties:ro
+      # Ensure worker has the same catalogs as coordinator (Mongo/Postgres/etc.)
+      - ./trino/etc/catalog:/etc/trino/catalog:ro
+      - ./trino/data:/data
+    restart: unless-stopped
+
+volumes: {}

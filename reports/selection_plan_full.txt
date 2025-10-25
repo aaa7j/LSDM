@@ -1,0 +1,143 @@
+CSV AUDIT (full) @ 2025-10-23T18:40:10.773630
+
+== PLAYERS (23 files) ==
+- archive (2)/NBA Player Box Score Stats(1950 - 2022).csv | cols=28, rows≈1309778 | seasons=201 (1900 → 2099) | score=6
+- archive (4)/PlayerStatistics.csv | cols=35, rows≈1630362 | seasons=80 (1946 → 2025) | score=3
+- archive (3)/Player Totals.csv | cols=33, rows≈32606 | seasons=79 (1947 → 2025) | score=9
+- archive (5)/Player Totals.csv | cols=33, rows≈32606 | seasons=79 (1947 → 2025) | score=9
+- archive (3)/Player Per Game.csv | cols=32, rows≈32606 | seasons=79 (1947 → 2025) | score=8
+- archive (3)/Player Season Info.csv | cols=8, rows≈32606 | seasons=79 (1947 → 2025) | score=8
+- archive (5)/Player Per Game.csv | cols=32, rows≈32606 | seasons=79 (1947 → 2025) | score=8
+- archive (5)/Player Season Info.csv | cols=8, rows≈32606 | seasons=79 (1947 → 2025) | score=8
+- archive (3)/Player Award Shares.csv | cols=10, rows≈3398 | seasons=77 (1948 → 2024) | score=6
+- archive (5)/Player Award Shares.csv | cols=10, rows≈3398 | seasons=77 (1948 → 2024) | score=6
+- archive (3)/Player Play By Play.csv | cols=26, rows≈17521 | seasons=29 (1997 → 2025) | score=8
+- archive (3)/Player Shooting.csv | cols=32, rows≈17521 | seasons=29 (1997 → 2025) | score=8
+- archive (5)/Player Play By Play.csv | cols=26, rows≈17521 | seasons=29 (1997 → 2025) | score=8
+- archive (5)/Player Shooting.csv | cols=32, rows≈17521 | seasons=29 (1997 → 2025) | score=8
+- archive (2)/NBA Player Stats(1950 - 2022).csv | cols=31, rows≈28237 | seasons=3 (1950 → 2022) | score=8
+- common_player_info.csv | cols=33, rows≈4171 | seasons=0 (-) | score=12
+- archive (1)/player_data.csv | cols=8, rows≈4550 | seasons=0 (-) | score=8
+- archive (3)/Player Career Info.csv | cols=11, rows≈5313 | seasons=0 (-) | score=8
+- archive (5)/Player Career Info.csv | cols=11, rows≈5313 | seasons=0 (-) | score=8
+- inactive_players.csv | cols=9, rows≈110191 | seasons=0 (-) | score=6
+
+  Suggested picks:
+    - (best_coverage_top) archive (2)/NBA Player Box Score Stats(1950 - 2022).csv -> seasons=201 (1900 → 2099), score=6
+    - (best_coverage_top) archive (4)/PlayerStatistics.csv -> seasons=80 (1946 → 2025), score=3
+    - (best_coverage_top) archive (3)/Player Totals.csv -> seasons=79 (1947 → 2025), score=9
+    - (best_coverage_top) archive (5)/Player Totals.csv -> seasons=79 (1947 → 2025), score=9
+    - (best_coverage_top) archive (3)/Player Per Game.csv -> seasons=79 (1947 → 2025), score=8
+    - (best_richness_top) common_player_info.csv -> seasons=0 (-), score=12
+    - (best_richness_top) archive (3)/Player Totals.csv -> seasons=79 (1947 → 2025), score=9
+    - (best_richness_top) archive (5)/Player Totals.csv -> seasons=79 (1947 → 2025), score=9
+    - (best_richness_top) archive (3)/Player Per Game.csv -> seasons=79 (1947 → 2025), score=8
+    - (best_richness_top) archive (3)/Player Season Info.csv -> seasons=79 (1947 → 2025), score=8
+
+== TEAMS (22 files) ==
+- archive (4)/TeamStatistics.csv | cols=48, rows≈143928 | seasons=80 (1946 → 2025) | score=0
+- archive (3)/Team Summaries.csv | cols=31, rows≈1876 | seasons=79 (1947 → 2025) | score=6
+- archive (5)/Team Summaries.csv | cols=31, rows≈1876 | seasons=79 (1947 → 2025) | score=6
+- archive (3)/Team Abbrev.csv | cols=5, rows≈1788 | seasons=79 (1947 → 2025) | score=5
+- archive (3)/Team Stats Per Game.csv | cols=28, rows≈1876 | seasons=79 (1947 → 2025) | score=5
+- archive (3)/Team Totals.csv | cols=28, rows≈1876 | seasons=79 (1947 → 2025) | score=5
+- archive (5)/Team Abbrev.csv | cols=5, rows≈1788 | seasons=79 (1947 → 2025) | score=5
+- archive (5)/Team Stats Per Game.csv | cols=28, rows≈1876 | seasons=79 (1947 → 2025) | score=5
+- archive (5)/Team Totals.csv | cols=28, rows≈1876 | seasons=79 (1947 → 2025) | score=5
+- archive (3)/End of Season Teams.csv | cols=7, rows≈2187 | seasons=78 (1947 → 2024) | score=2
+- archive (5)/End of Season Teams.csv | cols=7, rows≈2187 | seasons=78 (1947 → 2024) | score=2
+- archive (3)/End of Season Teams (Voting).csv | cols=14, rows≈4413 | seasons=62 (1963 → 2024) | score=2
+- archive (5)/End of Season Teams (Voting).csv | cols=14, rows≈4413 | seasons=62 (1963 → 2024) | score=2
+- archive (6)/NBA_coach_of_the_year.csv | cols=17, rows≈59 | seasons=58 (1963 → 2020) | score=6
+- archive (3)/Team Stats Per 100 Poss.csv | cols=28, rows≈1432 | seasons=52 (1974 → 2025) | score=5
+- archive (5)/Team Stats Per 100 Poss.csv | cols=28, rows≈1432 | seasons=52 (1974 → 2025) | score=5
+- team_details.csv | cols=14, rows≈30 | seasons=0 (-) | score=5
+- team_info_common.csv | cols=26, rows≈0 | seasons=0 (-) | score=5
+- team.csv | cols=7, rows≈30 | seasons=0 (-) | score=4
+- team_history.csv | cols=5, rows≈52 | seasons=0 (-) | score=4
+
+  Suggested picks:
+    - (best_coverage_top) archive (4)/TeamStatistics.csv -> seasons=80 (1946 → 2025), score=0
+    - (best_coverage_top) archive (3)/Team Summaries.csv -> seasons=79 (1947 → 2025), score=6
+    - (best_coverage_top) archive (5)/Team Summaries.csv -> seasons=79 (1947 → 2025), score=6
+    - (best_coverage_top) archive (3)/Team Stats Per Game.csv -> seasons=79 (1947 → 2025), score=5
+    - (best_coverage_top) archive (3)/Team Totals.csv -> seasons=79 (1947 → 2025), score=5
+    - (best_richness_top) archive (3)/Team Summaries.csv -> seasons=79 (1947 → 2025), score=6
+    - (best_richness_top) archive (5)/Team Summaries.csv -> seasons=79 (1947 → 2025), score=6
+    - (best_richness_top) archive (6)/NBA_coach_of_the_year.csv -> seasons=58 (1963 → 2020), score=6
+    - (best_richness_top) archive (3)/Team Stats Per Game.csv -> seasons=79 (1947 → 2025), score=5
+    - (best_richness_top) archive (3)/Team Totals.csv -> seasons=79 (1947 → 2025), score=5
+
+== GAMES (8 files) ==
+- archive (4)/Games.csv | cols=17, rows≈71964 | seasons=80 (1946 → 2025) | score=6
+- archive (3)/Opponent Stats Per Game.csv | cols=28, rows≈1876 | seasons=79 (1947 → 2025) | score=2
+- archive (5)/Opponent Stats Per Game.csv | cols=28, rows≈1876 | seasons=79 (1947 → 2025) | score=2
+- game.csv | cols=55, rows≈65698 | seasons=78 (1946 → 2023) | score=5
+- game_info.csv | cols=4, rows≈58053 | seasons=78 (1946 → 2023) | score=4
+- game_summary.csv | cols=14, rows≈58110 | seasons=77 (1946 → 2022) | score=5
+- archive (4)/LeagueSchedule24_25.csv | cols=15, rows≈1408 | seasons=0 (-) | score=4
+- archive (4)/LeagueSchedule25_26.csv | cols=17, rows≈1278 | seasons=0 (-) | score=4
+
+  Suggested picks:
+    - (best_coverage_top) archive (4)/Games.csv -> seasons=80 (1946 → 2025), score=6
+    - (best_coverage_top) archive (3)/Opponent Stats Per Game.csv -> seasons=79 (1947 → 2025), score=2
+    - (best_coverage_top) archive (5)/Opponent Stats Per Game.csv -> seasons=79 (1947 → 2025), score=2
+    - (best_coverage_top) game.csv -> seasons=78 (1946 → 2023), score=5
+    - (best_coverage_top) game_info.csv -> seasons=78 (1946 → 2023), score=4
+    - (best_richness_top) archive (4)/Games.csv -> seasons=80 (1946 → 2025), score=6
+    - (best_richness_top) game.csv -> seasons=78 (1946 → 2023), score=5
+    - (best_richness_top) game_summary.csv -> seasons=77 (1946 → 2022), score=5
+    - (best_richness_top) game_info.csv -> seasons=78 (1946 → 2023), score=4
+    - (best_richness_top) archive (4)/LeagueSchedule24_25.csv -> seasons=0 (-), score=4
+
+== STATS (7 files) ==
+- archive (1)/Seasons_Stats.csv | cols=52, rows≈24691 | seasons=200 (1900 → 2099) | score=15
+- archive (3)/Advanced.csv | cols=30, rows≈32606 | seasons=79 (1947 → 2025) | score=12
+- archive (5)/Advanced.csv | cols=30, rows≈32606 | seasons=79 (1947 → 2025) | score=12
+- archive (3)/Opponent Stats Per 100 Poss.csv | cols=28, rows≈1432 | seasons=52 (1974 → 2025) | score=5
+- archive (5)/Opponent Stats Per 100 Poss.csv | cols=28, rows≈1432 | seasons=52 (1974 → 2025) | score=5
+- draft_combine_stats.csv | cols=47, rows≈1202 | seasons=18 (2001 → 2023) | score=5
+- other_stats.csv | cols=26, rows≈28271 | seasons=0 (-) | score=0
+
+  Suggested picks:
+    - (best_coverage_top) archive (1)/Seasons_Stats.csv -> seasons=200 (1900 → 2099), score=15
+    - (best_coverage_top) archive (3)/Advanced.csv -> seasons=79 (1947 → 2025), score=12
+    - (best_coverage_top) archive (5)/Advanced.csv -> seasons=79 (1947 → 2025), score=12
+    - (best_coverage_top) archive (3)/Opponent Stats Per 100 Poss.csv -> seasons=52 (1974 → 2025), score=5
+    - (best_coverage_top) archive (5)/Opponent Stats Per 100 Poss.csv -> seasons=52 (1974 → 2025), score=5
+    - (best_richness_top) archive (1)/Seasons_Stats.csv -> seasons=200 (1900 → 2099), score=15
+    - (best_richness_top) archive (3)/Advanced.csv -> seasons=79 (1947 → 2025), score=12
+    - (best_richness_top) archive (5)/Advanced.csv -> seasons=79 (1947 → 2025), score=12
+    - (best_richness_top) archive (3)/Opponent Stats Per 100 Poss.csv -> seasons=52 (1974 → 2025), score=5
+    - (best_richness_top) archive (5)/Opponent Stats Per 100 Poss.csv -> seasons=52 (1974 → 2025), score=5
+
+== META (17 files) ==
+- archive (3)/Opponent Totals.csv | cols=28, rows≈1876 | seasons=79 (1947 → 2025) | score=1
+- archive (5)/Opponent Totals.csv | cols=28, rows≈1876 | seasons=79 (1947 → 2025) | score=1
+- archive (3)/Draft Pick History.csv | cols=8, rows≈8324 | seasons=78 (1947 → 2024) | score=1
+- archive (5)/Draft Pick History.csv | cols=8, rows≈8324 | seasons=78 (1947 → 2024) | score=1
+- draft_history.csv | cols=14, rows≈7990 | seasons=74 (1947 → 2023) | score=1
+- archive (3)/Per 36 Minutes.csv | cols=32, rows≈31523 | seasons=74 (1952 → 2025) | score=1
+- archive (5)/Per 36 Minutes.csv | cols=32, rows≈31523 | seasons=74 (1952 → 2025) | score=1
+- archive (3)/All-Star Selections.csv | cols=6, rows≈2004 | seasons=73 (1951 → 2024) | score=1
+- archive (5)/All-Star Selections.csv | cols=6, rows≈2004 | seasons=73 (1951 → 2024) | score=1
+- archive (3)/Per 100 Poss.csv | cols=34, rows≈26959 | seasons=52 (1974 → 2025) | score=1
+- archive (5)/Per 100 Poss.csv | cols=34, rows≈26959 | seasons=52 (1974 → 2025) | score=1
+- archive (2)/NBA Payroll(1990-2023).csv | cols=4, rows≈966 | seasons=3 (1990 → 2023) | score=0
+- archive (2)/NBA Salaries(1990-2023).csv | cols=4, rows≈15857 | seasons=3 (1990 → 2023) | score=0
+- archive/all_seasons.csv | cols=21, rows≈12844 | seasons=0 (-) | score=1
+- line_score.csv | cols=43, rows≈58053 | seasons=0 (-) | score=0
+- officials.csv | cols=5, rows≈70971 | seasons=0 (-) | score=0
+- play_by_play.csv | cols=34, rows≈13592899 | seasons=0 (-) | score=0
+
+  Suggested picks:
+    - (best_coverage_top) archive (3)/Opponent Totals.csv -> seasons=79 (1947 → 2025), score=1
+    - (best_coverage_top) archive (5)/Opponent Totals.csv -> seasons=79 (1947 → 2025), score=1
+    - (best_coverage_top) archive (3)/Draft Pick History.csv -> seasons=78 (1947 → 2024), score=1
+    - (best_coverage_top) archive (5)/Draft Pick History.csv -> seasons=78 (1947 → 2024), score=1
+    - (best_coverage_top) archive (3)/Per 36 Minutes.csv -> seasons=74 (1952 → 2025), score=1
+    - (best_richness_top) archive (3)/Opponent Totals.csv -> seasons=79 (1947 → 2025), score=1
+    - (best_richness_top) archive (5)/Opponent Totals.csv -> seasons=79 (1947 → 2025), score=1
+    - (best_richness_top) archive (3)/Draft Pick History.csv -> seasons=78 (1947 → 2024), score=1
+    - (best_richness_top) archive (5)/Draft Pick History.csv -> seasons=78 (1947 → 2024), score=1
+    - (best_richness_top) archive (3)/Per 36 Minutes.csv -> seasons=74 (1952 → 2025), score=1

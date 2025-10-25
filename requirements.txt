@@ -3,3 +3,6 @@ fastapi
 uvicorn[standard]
 pydantic>=2
 numpy
+psycopg2-binary
+pandas
+pymongo
