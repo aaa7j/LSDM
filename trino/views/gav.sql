@@ -1,64 +1,117 @@
 -- Create logical GAV schema in Trino (in-memory)
 CREATE SCHEMA IF NOT EXISTS memory.gav;
 
--- Optional manual patch for missing bios (normalized name -> cm/kg)
-DROP TABLE IF EXISTS memory.gav.player_bio_patch;
-CREATE TABLE memory.gav.player_bio_patch (
-  norm_name VARCHAR,
-  height_cm INTEGER,
-  weight_kg INTEGER
-);
-INSERT INTO memory.gav.player_bio_patch (norm_name, height_cm, weight_kg) VALUES
-  ('marcgasol', 216, 116);
-
--- Global player per-season view (sanitized, robust types)
+-- Global player per-season view (CPI-first attributes, PT-driven roster)
 CREATE OR REPLACE VIEW memory.gav.global_player_season AS
+WITH
+pt_roster AS (
+  SELECT
+    pt.player_id                                                AS pt_player_id,
+    MAX(pt.player)                                   AS player_raw,
+    REGEXP_REPLACE(TRANSLATE(LOWER(pt.player), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', '') AS pt_norm_name,
+    REGEXP_REPLACE(TRANSLATE(LOWER(regexp_extract(pt.player, '(^| )([^ ]+)$', 2)), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', '') AS pt_last_norm,
+    SUBSTR(REGEXP_REPLACE(TRANSLATE(LOWER(regexp_extract(pt.player, '^([A-Za-z0-9]+)', 1)), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', ''), 1, 2) AS pt_first2_norm,
+    TRY_CAST(pt.season AS INTEGER)                              AS season,
+    UPPER(pt.team)                                              AS team_abbr,
+    UPPER(pt.pos)                                               AS pt_pos,
+    MAX(COALESCE(TRY_CAST(pt.g  AS INTEGER), 0))                AS g,
+    MAX(COALESCE(TRY_CAST(pt.gs AS INTEGER), 0))                AS gs,
+    MAX(TRY_CAST(pt.pts AS DOUBLE))                             AS pts,
+    MAX(TRY_CAST(pt.ast AS DOUBLE))                             AS ast,
+    MAX(TRY_CAST(pt.trb AS DOUBLE))                             AS trb
+  FROM mongodb.lsdm.player_totals pt
+  GROUP BY pt.player_id, LOWER(pt.player),
+           REGEXP_REPLACE(TRANSLATE(LOWER(pt.player), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', ''),
+           REGEXP_REPLACE(TRANSLATE(LOWER(regexp_extract(pt.player, '(^| )([^ ]+)$', 2)), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', ''),
+           SUBSTR(REGEXP_REPLACE(TRANSLATE(LOWER(regexp_extract(pt.player, '^([A-Za-z0-9]+)', 1)), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', ''), 1, 2),
+           TRY_CAST(pt.season AS INTEGER), UPPER(pt.team), UPPER(pt.pos)
+),
+cpi_info AS (
+  SELECT player_id, full_name, first_name, last_name, position, height, weight
+  FROM mongodb.lsdm.common_player_info
+),
+cand AS (
+  -- Priority 1: by exact player_id
+  SELECT pr.*, c.player_id AS cpi_id, c.full_name AS cpi_full_name, c.position AS cpi_pos,
+         c.height AS cpi_height, c.weight AS cpi_weight, 1 AS prio
+  FROM pt_roster pr JOIN cpi_info c ON c.player_id = pr.pt_player_id
+  UNION ALL
+  -- Priority 2: by normalized full_name
+  SELECT pr.*, c.player_id, c.full_name, c.position, c.height, c.weight, 2 AS prio
+  FROM pt_roster pr JOIN cpi_info c
+    ON REGEXP_REPLACE(TRANSLATE(LOWER(c.full_name), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', '') = pr.pt_norm_name
+  UNION ALL
+  -- Priority 3: by last_name + first 2 of first_name (normalized)
+  SELECT pr.*, c.player_id, c.full_name, c.position, c.height, c.weight, 3 AS prio
+  FROM pt_roster pr JOIN cpi_info c
+    ON REGEXP_REPLACE(TRANSLATE(LOWER(c.last_name),  'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', '') = pr.pt_last_norm
+   AND SUBSTR(REGEXP_REPLACE(TRANSLATE(LOWER(c.first_name), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', ''), 1, 2) = pr.pt_first2_norm
+  UNION ALL
+  -- Fallback: no CPI match
+  SELECT pr.*, CAST(NULL AS VARCHAR) AS cpi_id, CAST(NULL AS VARCHAR) AS cpi_full_name,
+         CAST(NULL AS VARCHAR) AS cpi_pos, CAST(NULL AS VARCHAR) AS cpi_height,
+         CAST(NULL AS VARCHAR) AS cpi_weight, 99 AS prio
+  FROM pt_roster pr
+),
+best AS (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY pt_player_id, season, team_abbr ORDER BY prio) AS rn
+  FROM cand
+),
+joined AS (
+  SELECT
+    COALESCE(cpi_id, pt_player_id)                               AS player_id,
+    COALESCE(cpi_full_name, player_raw)                          AS player_name,
+    season,
+    team_abbr,
+    COALESCE(UPPER(cpi_pos), pt_pos)                             AS position,
+    CAST(ROUND(
+      CASE WHEN cpi_height IS NOT NULL AND REGEXP_LIKE(cpi_height, '^[0-9]+-[0-9]+$')
+           THEN 2.54 * (
+             TRY_CAST(element_at(split(cpi_height, '-'), 1) AS DOUBLE) * 12 +
+             TRY_CAST(element_at(split(cpi_height, '-'), 2) AS DOUBLE)
+           )
+      END
+    ) AS INTEGER)                                                AS height_cm,
+    CAST(ROUND(
+      CASE WHEN cpi_weight IS NOT NULL
+           THEN 0.45359237 * TRY_CAST(regexp_extract(cpi_weight, '^[0-9]+', 0) AS DOUBLE)
+      END
+    ) AS INTEGER)                                                AS weight_kg,
+    g, gs, pts, ast, trb,
+    CASE WHEN cpi_pos IS NOT NULL THEN 'common_player_info' ELSE 'player_totals' END AS src_position
+  FROM best
+  WHERE rn = 1
+)
 SELECT
-  pt.player_id                                                            AS player_id,
-  COALESCE(LOWER(cpi.full_name), LOWER(pt.player))                        AS player_name,
-  TRY_CAST(pt.season AS INTEGER)                                          AS season,
-  COALESCE(UPPER(pt.team), UPPER(ppg.team), UPPER(cpi.team_abbreviation)) AS team_abbr,
-  COALESCE(cpi.position, UPPER(pt.pos), UPPER(ppg.pos))                   AS position,
-  cpi.height                                                              AS height,
-  cpi.weight                                                              AS weight,
-  CAST(ROUND(COALESCE(
-    CASE
-      WHEN cpi.height IS NOT NULL AND REGEXP_LIKE(cpi.height, '^\d+-\d+$') THEN
-        2.54 * (
-          TRY_CAST(element_at(split(cpi.height, '-'), 1) AS DOUBLE) * 12 +
-          TRY_CAST(element_at(split(cpi.height, '-'), 2) AS DOUBLE)
-        )
-    END,
-    TRY_CAST(bio.height_cm AS DOUBLE)
-  )) AS INTEGER)                                                            AS height_cm,
-  CAST(ROUND(COALESCE(
-    CASE
-      WHEN cpi.weight IS NOT NULL THEN 0.45359237 * TRY_CAST(regexp_extract(cpi.weight, '^(\d+(?:\.\d+)?)', 1) AS DOUBLE)
-    END,
-    TRY_CAST(bio.weight_kg AS DOUBLE)
-  )) AS INTEGER)                                                            AS weight_kg,
-  COALESCE(TRY_CAST(pt.g  AS INTEGER), TRY_CAST(ppg.g AS INTEGER))        AS g,
-  COALESCE(TRY_CAST(pt.gs AS INTEGER), TRY_CAST(ppg.gs AS INTEGER))       AS gs,
-  TRY_CAST(pt.pts AS DOUBLE)                                              AS pts,
-  TRY_CAST(pt.ast AS DOUBLE)                                              AS ast,
-  TRY_CAST(pt.trb AS DOUBLE)                                              AS trb,
+  j.player_id,
+  TRANSLATE(j.player_name, 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd') AS player_name,
+  j.season,
+  j.team_abbr,
+  UPPER(j.position)                              AS position,
+  j.height_cm                                    AS height_cm,
+  j.weight_kg                                    AS weight_kg,
+  j.g, j.gs, j.pts, j.ast, j.trb,
   ppg.pts_per_game, ppg.ast_per_game, ppg.trb_per_game,
-  COALESCE(adv.per,        ss.per)                                        AS per,
+  COALESCE(adv.per, ss.per)                      AS per,
   CASE WHEN COALESCE(adv.ts_percent, ss.ts_percent) > 1 THEN COALESCE(adv.ts_percent, ss.ts_percent) / 100.0
-       ELSE COALESCE(adv.ts_percent, ss.ts_percent) END                   AS ts_percent,
-  COALESCE(adv.ws,         ss.ws)                                         AS ws,
+       ELSE COALESCE(adv.ts_percent, ss.ts_percent) END       AS ts_percent,
+  COALESCE(adv.ws, ss.ws)                        AS ws,
   adv.bpm,
-  COALESCE(adv.vorp,       ss.vorp)                                       AS vorp,
-  psi.experience                                                         AS experience_years,
-  CASE WHEN cpi.position IS NOT NULL THEN 'common_player_info'
-       WHEN pt.pos IS NOT NULL THEN 'player_totals'
-       WHEN ppg.pos IS NOT NULL THEN 'player_per_game'
-  END AS src_position
-FROM mongodb.lsdm.player_totals pt
-LEFT JOIN postgresql.staging.player_per_game ppg
-  ON ppg.player_id = pt.player_id
- AND TRY_CAST(ppg.season AS INTEGER) = TRY_CAST(pt.season AS INTEGER)
- AND UPPER(ppg.team) = UPPER(pt.team)
+  COALESCE(adv.vorp, ss.vorp)                    AS vorp,
+  psi.experience                                 AS experience_years,
+  j.src_position
+FROM joined j
+LEFT JOIN (
+  SELECT player_id,
+         TRY_CAST(season AS INTEGER) AS season,
+         UPPER(team) AS team_abbr,
+         AVG(pts_per_game) AS pts_per_game,
+         AVG(ast_per_game) AS ast_per_game,
+         AVG(trb_per_game) AS trb_per_game
+  FROM postgresql.staging.player_per_game
+  GROUP BY 1,2,3
+) ppg
+  ON ppg.player_id = j.player_id AND ppg.season = j.season AND ppg.team_abbr = j.team_abbr
 LEFT JOIN (
   SELECT player_id,
          TRY_CAST(season AS INTEGER) AS season,
@@ -70,8 +123,7 @@ LEFT JOIN (
   FROM postgresql.staging.player_advanced
   GROUP BY 1,2
 ) adv
-  ON adv.player_id = pt.player_id
- AND adv.season    = TRY_CAST(pt.season AS INTEGER)
+  ON adv.player_id = j.player_id AND adv.season = j.season
 LEFT JOIN (
   SELECT player_id,
          TRY_CAST(season AS INTEGER) AS season,
@@ -79,8 +131,7 @@ LEFT JOIN (
   FROM postgresql.staging.player_season_info
   GROUP BY 1,2
 ) psi
-  ON psi.player_id = pt.player_id
- AND psi.season    = TRY_CAST(pt.season AS INTEGER)
+  ON psi.player_id = j.player_id AND psi.season = j.season
 LEFT JOIN (
   SELECT LOWER(player) AS player_name,
          TRY_CAST(year AS INTEGER) AS season,
@@ -91,21 +142,7 @@ LEFT JOIN (
   FROM postgresql.staging.seasons_stats
   GROUP BY 1,2
 ) ss
-  ON ss.player_name = LOWER(pt.player)
- AND ss.season      = TRY_CAST(pt.season AS INTEGER)
-LEFT JOIN mongodb.lsdm.common_player_info cpi
-  ON REGEXP_REPLACE(
-       TRANSLATE(LOWER(cpi.full_name), 'áàâäãåéèêëíìîïóòôöõúùûüñç', 'aaaaaaeeeeiiiiooooouuuunc'),
-       '[^a-z0-9]', ''
-     ) = REGEXP_REPLACE(
-       TRANSLATE(LOWER(pt.player), 'áàâäãåéèêëíìîïóòôöõúùûüñç', 'aaaaaaeeeeiiiiooooouuuunc'),
-       '[^a-z0-9]', ''
-     )
-LEFT JOIN memory.gav.player_bio_patch bio
-  ON bio.norm_name = REGEXP_REPLACE(
-       TRANSLATE(LOWER(pt.player), 'ǭ��ǽ��ǜǾǸ��ǦǮ��Ǫǩ������������ǧ��ǯǬ����', 'aaaaaaeeeeiiiiooooouuuunc'),
-       '[^a-z0-9]', ''
-     );
+  ON ss.player_name = LOWER(j.player_name) AND ss.season = j.season;
 
 -- Global team per-season view (comprehensive metrics)
 CREATE OR REPLACE VIEW memory.gav.global_team_season AS
@@ -171,7 +208,6 @@ LEFT JOIN postgresql.staging.team_totals tot
 LEFT JOIN mongodb.lsdm.team_abbrev ta
   ON TRY_CAST(ta.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER)
  AND UPPER(ta.abbreviation) = UPPER(ts.abbreviation)
--- Filter out incomplete keys\r
 WHERE ts.season IS NOT NULL
   AND COALESCE(ts.abbreviation, tpg.abbreviation, t100.abbreviation, ta.abbreviation) IS NOT NULL
   AND COALESCE(ts.abbreviation, tpg.abbreviation, t100.abbreviation, ta.abbreviation) <> '';
@@ -181,17 +217,17 @@ CREATE OR REPLACE VIEW memory.gav.global_game AS
 SELECT
   g.game_id,
   TRY_CAST(g.date AS DATE)                                   AS game_date,
-  COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season,1,4) AS INTEGER), year(TRY_CAST(g.date AS DATE)))                              AS season,
-  g.home.team_id         AS home_team_id,
+  COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season,1,4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) AS season,
+  g.home.team_id          AS home_team_id,
   LOWER(g.home.team_city) AS home_team_city,
   LOWER(g.home.team_name) AS home_team_name,
-  TRY_CAST(g.home.score AS INTEGER)                          AS home_score,
-  g.away.team_id         AS away_team_id,
+  TRY_CAST(g.home.score AS INTEGER)                           AS home_score,
+  g.away.team_id          AS away_team_id,
   LOWER(g.away.team_city) AS away_team_city,
   LOWER(g.away.team_name) AS away_team_name,
-  TRY_CAST(g.away.score AS INTEGER)                          AS away_score,
-  LOWER(g.winner)        AS winner,
-  TRY_CAST(g.attendance AS INTEGER)                          AS attendance
+  TRY_CAST(g.away.score AS INTEGER)                           AS away_score,
+  LOWER(g.winner)         AS winner,
+  TRY_CAST(g.attendance AS INTEGER)                           AS attendance
 FROM mongodb.lsdm.games g;
 
 -- Player dimension (from common_player_info)
@@ -211,7 +247,6 @@ SELECT DISTINCT
 FROM mongodb.lsdm.common_player_info cpi;
 
 -- Team dimension (from team_details)
-DROP VIEW IF EXISTS memory.gav.dim_team;
 CREATE OR REPLACE VIEW memory.gav.dim_team_season AS
 SELECT DISTINCT
   TRY_CAST(ts.season AS INTEGER)                                         AS season,
@@ -270,19 +305,3 @@ SELECT
   pts,
   TRY_CAST(plus_minus AS DOUBLE) AS plus_minus
 FROM postgresql.staging.nba_player_box_score_stats_1950_2022;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

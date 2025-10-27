@@ -387,6 +387,38 @@ def apply_gav_views(host: str, port: int, user: str) -> str:
     return f"Eseguite {executed} istruzioni da {path}"
 
 
+def reset_memory_gav(host: str, port: int, user: str) -> None:
+    """Drop and recreate memory.gav schema to ensure a clean slate."""
+    # Try drop with CASCADE
+    try:
+        with connect_trino(host, int(port), user, catalog="memory", schema="gav") as conn:
+            cur = conn.cursor()
+            cur.execute("DROP SCHEMA IF EXISTS memory.gav CASCADE")
+            try:
+                cur.fetchall()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Recreate schema
+    with connect_trino(host, int(port), user, catalog="memory", schema="default") as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE SCHEMA IF NOT EXISTS memory.gav")
+        try:
+            cur.fetchall()
+        except Exception:
+            pass
+
+
+def ensure_gav_ready(host: str, port: int, user: str) -> None:
+    """Idempotently ensure memory.gav views exist and are up to date."""
+    if st.session_state.get("gav_ready"):
+        return
+    reset_memory_gav(host, port, user)
+    apply_gav_views(host, port, user)
+    st.session_state["gav_ready"] = True
+
+
 def diagnose(host: str, port: int, user: str) -> Dict[str, List[str]]:
     """Basic connectivity and metadata diagnostics to surface common issues."""
     report: Dict[str, List[str]] = {}
@@ -460,9 +492,20 @@ def main():
         port = st.number_input("Port", value=8080, min_value=1, max_value=65535, step=1)
         user = st.text_input("User", value="streamlit")
         st.caption("Catalog/schema di default: memory/gav. Le query sono qualificate completamente.")
+
+        # Auto-apply GAV views once per session
+        if not st.session_state.get("gav_ready"):
+            try:
+                with st.spinner("Inizializzo viste GAV..."):
+                    ensure_gav_ready(host, int(port), user)
+                st.success("Viste GAV pronte")
+            except Exception as e:
+                st.warning(f"Init automatico GAV fallito: {e}")
         if st.button("Applica/aggiorna viste GAV"):
             try:
+                reset_memory_gav(host, int(port), user)
                 msg = apply_gav_views(host, int(port), user)
+                st.session_state["gav_ready"] = True
                 st.success(msg)
             except Exception as e:
                 st.error(f"Errore nell'applicare le viste: {e}")
