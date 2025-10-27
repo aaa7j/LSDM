@@ -7,7 +7,6 @@ SELECT player_name, season, team_abbr, position, height_cm, weight_kg, src_posit
 FROM memory.gav.global_player_season
 WHERE team_abbr = 'LAL' AND season BETWEEN 2019 AND 2021
 ORDER BY season DESC, player_name
-LIMIT 20;
 
 -- BEFORE (raw)
 SELECT
@@ -29,7 +28,6 @@ LEFT JOIN mongodb.lsdm.common_player_info cpi
   ON cpi.player_id = pt.player_id
 WHERE UPPER(pt.team) = 'LAL' AND TRY_CAST(pt.season AS INTEGER) BETWEEN 2019 AND 2021
 ORDER BY season DESC, player_name
-LIMIT 20;
 
 -- 2) Team meta (team name, coach, arena) for selected teams in a season
 -- AFTER (view)
@@ -68,7 +66,6 @@ SELECT player_name, team_abbr, per, ts_percent, ws, vorp
 FROM memory.gav.global_player_season
 WHERE season = 2016 AND team_abbr = 'CLE'
 ORDER BY per DESC NULLS LAST
-LIMIT 10;
 
 -- BEFORE (raw)
 WITH adv AS (
@@ -111,7 +108,6 @@ LEFT JOIN mongodb.lsdm.common_player_info cpi
   ON cpi.player_id = pt.player_id
 WHERE TRY_CAST(pt.season AS INTEGER) = 2016 AND UPPER(pt.team) = 'CLE'
 ORDER BY per DESC NULLS LAST
-LIMIT 10;
 
 -- 4) Highest-attendance games in a season (date/season normalization and nesting)
 -- AFTER (view)
@@ -119,7 +115,6 @@ SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_cit
 FROM memory.gav.global_game
 WHERE season = 2025 AND attendance IS NOT NULL
 ORDER BY attendance DESC
-LIMIT 10;
 
 -- BEFORE (raw)
 SELECT
@@ -135,7 +130,6 @@ FROM mongodb.lsdm.games g
 WHERE COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season, 1, 4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) = 2025
   AND g.attendance IS NOT NULL
 ORDER BY attendance DESC
-LIMIT 10;
 
 -- 5) Triple-doubles per player over a period (large box score CSV normalization)
 -- AFTER (view)
@@ -145,7 +139,6 @@ WHERE season BETWEEN 2010 AND 2020
   AND pts >= 10 AND reb >= 10 AND ast >= 10
 GROUP BY player_name
 ORDER BY triple_doubles DESC
-LIMIT 15;
 
 -- 6) Statistiche avanzate di squadra per stagione (LAL vs BOS, 2020)
 -- Senza GAV (raw)
@@ -184,14 +177,12 @@ LEFT JOIN mongodb.lsdm.team_details td
   ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
 WHERE TRY_CAST(ts.season AS INTEGER) = 2025
 ORDER BY ts.attend DESC NULLS LAST
-LIMIT 10;
 
 -- Con GAV (vista)
 SELECT season, team_abbr, team_name, attend, attend_g
 FROM memory.gav.global_team_season
 WHERE season = 2025
 ORDER BY attend DESC NULLS LAST
-LIMIT 10;
 
 -- Con GAV (vista)
   o_rtg,
@@ -213,7 +204,7 @@ WHERE TRY_CAST(season AS INTEGER) BETWEEN 2010 AND 2020
   AND TRY_CAST(ast AS INTEGER) >= 10
 GROUP BY LOWER(player_name)
 ORDER BY triple_doubles DESC
-LIMIT 15;
+
 
 
 

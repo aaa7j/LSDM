@@ -70,7 +70,6 @@ LEFT JOIN mongodb.lsdm.common_player_info cpi
   ON cpi.player_id = pt.player_id
 WHERE UPPER(pt.team) = 'LAL' AND TRY_CAST(pt.season AS INTEGER) BETWEEN 2019 AND 2021
 ORDER BY season DESC, player_name
-LIMIT 20;
 """
         ),
         sql_gav=(
@@ -79,7 +78,6 @@ SELECT player_name, season, team_abbr, position, height_cm, weight_kg, src_posit
 FROM memory.gav.global_player_season
 WHERE team_abbr = 'LAL' AND season BETWEEN 2019 AND 2021
 ORDER BY season DESC, player_name
-LIMIT 20;
 """
         ),
     ),
@@ -164,7 +162,6 @@ LEFT JOIN mongodb.lsdm.common_player_info cpi
   ON cpi.player_id = pt.player_id
 WHERE TRY_CAST(pt.season AS INTEGER) = 2016 AND UPPER(pt.team) = 'CLE'
 ORDER BY per DESC NULLS LAST
-LIMIT 10;
 """
         ),
         sql_gav=(
@@ -173,7 +170,6 @@ SELECT player_name, team_abbr, per, ts_percent, ws, vorp
 FROM memory.gav.global_player_season
 WHERE season = 2016 AND team_abbr = 'CLE'
 ORDER BY per DESC NULLS LAST
-LIMIT 10;
 """
         ),
     ),
@@ -194,7 +190,6 @@ FROM mongodb.lsdm.games g
 WHERE COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season, 1, 4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) = 2025
   AND g.attendance IS NOT NULL
 ORDER BY attendance DESC
-LIMIT 10;
 """
         ),
         sql_gav=(
@@ -203,7 +198,6 @@ SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_cit
 FROM memory.gav.global_game
 WHERE TRY_CAST(season AS INTEGER) = 2025 AND attendance IS NOT NULL
 ORDER BY attendance DESC
-LIMIT 10;
 """
         ),
     ),
@@ -224,7 +218,6 @@ LEFT JOIN mongodb.lsdm.team_details td
   ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
 WHERE TRY_CAST(ts.season AS INTEGER) = 2025
 ORDER BY ts.attend DESC NULLS LAST
-LIMIT 10;
 """
         ),
         sql_gav=(
@@ -233,7 +226,6 @@ SELECT season, team_abbr, team_name, attend, attend_g
 FROM memory.gav.global_team_season
 WHERE TRY_CAST(season AS INTEGER) = 2025
 ORDER BY attend DESC NULLS LAST
-LIMIT 10;
 """
         ),
     ),
@@ -249,7 +241,6 @@ WHERE TRY_CAST(season AS INTEGER) BETWEEN 2010 AND 2020
   AND TRY_CAST(ast AS INTEGER) >= 10
 GROUP BY LOWER(player_name)
 ORDER BY triple_doubles DESC
-LIMIT 15;
 """
         ),
         sql_gav=(
@@ -260,7 +251,6 @@ WHERE season BETWEEN 2010 AND 2020
   AND pts >= 10 AND reb >= 10 AND ast >= 10
 GROUP BY player_name
 ORDER BY triple_doubles DESC
-LIMIT 15;
 """
         ),
     ),
@@ -340,6 +330,19 @@ def run_query(sql: str, host: str, port: int, user: str, catalog: str = "memory"
         rows = cur.fetchmany(size=max_rows)
         cols = [c[0] for c in cur.description] if cur.description else []
         return pd.DataFrame(rows, columns=cols)
+
+
+def _apply_limit(sql: str, n: int) -> str:
+    s = _sanitize_sql_for_trino(sql)
+    try:
+        # Replace trailing LIMIT <num> or append if missing
+        if re.search(r"(?is)\blimit\s+\d+\s*$", s):
+            s = re.sub(r"(?is)\blimit\s+\d+\s*$", f"LIMIT {int(n)}", s)
+        else:
+            s = f"{s} LIMIT {int(n)}"
+    except Exception:
+        pass
+    return s
 
 
 def apply_gav_views(host: str, port: int, user: str) -> str:
@@ -496,13 +499,107 @@ def main():
     choice = st.selectbox("Caso", options=case_titles, index=0)
     case = next(c for c in CASES if c.title == choice)
 
+    # Optional dynamic parameter UI per case
+    def _sanitize_team_abbr(s: str) -> str:
+        return re.sub(r"[^A-Za-z]", "", (s or "").upper())
+
+    dyn_raw = case.sql_raw
+    dyn_gav = case.sql_gav
+
+    with st.expander("Parametri", expanded=True):
+        if "Roster + posizione" in case.title:
+            team = _sanitize_team_abbr(st.text_input("Team abbr", value="LAL"))
+            y1, y2 = st.slider("Intervallo stagioni", 1950, 2030, (2019, 2021))
+            dyn_raw = f"""
+SELECT
+  COALESCE(LOWER(cpi.full_name), LOWER(pt.player))            AS player_name,
+  TRY_CAST(pt.season AS INTEGER)                              AS season,
+  UPPER(pt.team)                                              AS team_abbr,
+  COALESCE(cpi.position, UPPER(pt.pos), UPPER(ppg.pos))       AS position,
+  cpi.height, cpi.weight,
+  CASE WHEN cpi.position IS NOT NULL THEN 'common_player_info'
+       WHEN pt.pos IS NOT NULL THEN 'player_totals'
+       WHEN ppg.pos IS NOT NULL THEN 'player_per_game'
+  END                                                         AS src_position
+FROM mongodb.lsdm.player_totals pt
+LEFT JOIN postgresql.staging.player_per_game ppg
+  ON ppg.player_id = pt.player_id
+ AND TRY_CAST(ppg.season AS INTEGER) = TRY_CAST(pt.season AS INTEGER)
+ AND UPPER(ppg.team) = UPPER(pt.team)
+LEFT JOIN mongodb.lsdm.common_player_info cpi
+  ON cpi.player_id = pt.player_id
+WHERE UPPER(pt.team) = '{team}' AND TRY_CAST(pt.season AS INTEGER) BETWEEN {y1} AND {y2}
+ORDER BY season DESC, player_name"""
+            dyn_gav = f"""
+SELECT player_name, season, team_abbr, position, height_cm, weight_kg, src_position
+FROM memory.gav.global_player_season
+WHERE team_abbr = '{team}' AND season BETWEEN {y1} AND {y2}
+ORDER BY season DESC, player_name"""
+        elif "Team meta (coach + arena)" in case.title:
+            season = st.number_input("Season", 1950, 2030, 2020, step=1)
+            teams_in = st.text_input("Team abbr (lista separata da virgola)", value="BOS,LAL")
+            abbrs = ",".join([f"'{_sanitize_team_abbr(t)}'" for t in teams_in.split(',') if _sanitize_team_abbr(t)]) or "'BOS','LAL'"
+            dyn_gav = f"""
+SELECT season, team_abbr, team_name, coach, arena_name, src_coach, src_arena
+FROM memory.gav.dim_team_season
+WHERE team_abbr IN ({abbrs}) AND season = {season}
+ORDER BY team_abbr;"""
+        elif "Top 10 PER" in case.title:
+            team = _sanitize_team_abbr(st.text_input("Team abbr", value="CLE"))
+            season = st.number_input("Season", 1950, 2030, 2016, step=1)
+            dyn_gav = f"""
+SELECT player_name, team_abbr, per, ts_percent, ws, vorp
+FROM memory.gav.global_player_season
+WHERE season = {season} AND team_abbr = '{team}'
+ORDER BY per DESC NULLS LAST"""
+        elif "Partite con maggiore affluenza" in case.title:
+            season = st.number_input("Season", 1950, 2035, 2025, step=1)
+            dyn_gav = f"""
+SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_city, away_team_name, attendance
+FROM memory.gav.global_game
+WHERE season = {season} AND attendance IS NOT NULL
+ORDER BY attendance DESC"""
+        elif "Triple-doubles per giocatore" in case.title:
+            start, end = st.slider("Intervallo stagioni", 1950, 2035, (2010, 2020))
+            dyn_gav = f"""
+SELECT player_name, COUNT(*) AS triple_doubles
+FROM memory.gav.player_game_box
+WHERE season BETWEEN {start} AND {end}
+  AND pts >= 10 AND reb >= 10 AND ast >= 10
+GROUP BY player_name
+ORDER BY triple_doubles DESC"""
+        elif "Statistiche avanzate di squadra" in case.title:
+            season = st.number_input("Season", 1950, 2035, 2020, step=1)
+            team1 = _sanitize_team_abbr(st.text_input("Team A", value="LAL"))
+            team2 = _sanitize_team_abbr(st.text_input("Team B", value="BOS"))
+            dyn_gav = f"""
+SELECT
+  season,
+  team_abbr,
+  ROUND(o_rtg, 1) AS o_rtg,
+  ROUND(d_rtg, 1) AS d_rtg,
+  ROUND(n_rtg, 1) AS n_rtg,
+  ROUND(pace, 1)  AS pace,
+  ROUND(COALESCE(points_per_game, (o_rtg * pace)/100.0), 1) AS points_per_game
+FROM memory.gav.global_team_season
+WHERE season = {season}
+  AND team_abbr IN ('{team1}','{team2}')
+ORDER BY team_abbr;"""
+        elif "Affluenza media stagionale" in case.title:
+            season = st.number_input("Season", 1950, 2035, 2025, step=1)
+            dyn_gav = f"""
+SELECT season, team_abbr, team_name, attend, attend_g
+FROM memory.gav.global_team_season
+WHERE TRY_CAST(season AS INTEGER) = {season}
+ORDER BY attend DESC NULLS LAST"""
+
     col1, col2 = st.columns(2)
     with col1:
         st.text("Sorgenti raw (senza GAV)")
-        st.code(case.sql_raw.strip(), language="sql")
+        st.code((dyn_raw or case.sql_raw).strip(), language="sql")
     with col2:
         st.text("Vista globale (con GAV)")
-        st.code(case.sql_gav.strip(), language="sql")
+        st.code((dyn_gav or case.sql_gav).strip(), language="sql")
 
     st.divider()
 
@@ -511,10 +608,16 @@ def main():
     if run:
         try:
             with st.spinner("Eseguo la query GAV su Trino..."):
-                df = run_query(case.sql_gav, host, int(port), user, catalog="memory", schema="gav", max_rows=int(max_rows))
+                df = run_query((dyn_gav or case.sql_gav), host, int(port), user, catalog="memory", schema="gav", max_rows=int(max_rows))
             if df.empty:
                 st.info("Nessun risultato (tabella vuota).")
             else:
+                # Render with 1-based row index for readability
+                try:
+                    df.index = df.index + 1
+                    df.index.name = "#"
+                except Exception:
+                    pass
                 st.dataframe(df)
         except Exception as e:
             # Surface rich error info if available
@@ -531,6 +634,8 @@ def main():
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+
+
 
 
 

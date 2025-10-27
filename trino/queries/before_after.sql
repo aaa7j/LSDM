@@ -5,7 +5,6 @@ SELECT player_name, season, team_abbr, position, height, weight, src_position
 FROM memory.gav.global_player_season
 WHERE team_abbr = 'LAL' AND season BETWEEN 2019 AND 2021
 ORDER BY season DESC, player_name
-LIMIT 20;
 
 -- BEFORE: equivalent raw join across Postgres + Mongo
 SELECT
@@ -25,7 +24,6 @@ LEFT JOIN mongodb.lsdm.player_bio b
   ON b.player_id = CAST(pt.player_id AS VARCHAR)
 WHERE UPPER(pt.team) = 'LAL' AND CAST(pt.season AS INTEGER) BETWEEN 2019 AND 2021
 ORDER BY season DESC, player_name
-LIMIT 20;
 
 -- Team meta AFTER
 SELECT season, team_abbr, team_name, coach, arena_name, src_coach, src_arena
@@ -47,4 +45,5 @@ LEFT JOIN mongodb.lsdm.team_details td
   ON UPPER(td.abbreviation) = COALESCE(ts.abbreviation, ta.abbreviation)
 WHERE COALESCE(ts.abbreviation, ta.abbreviation) IN ('BOS','LAL') AND CAST(ts.season AS INTEGER) = 2020
 ORDER BY team_abbr;
+
 

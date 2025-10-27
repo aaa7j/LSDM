@@ -66,13 +66,11 @@ LEFT JOIN postgresql.staging.player_per_game ppg
 LEFT JOIN mongodb.lsdm.common_player_info cpi
   ON cpi.player_id = pt.player_id
 WHERE UPPER(pt.team) = 'LAL' AND TRY_CAST(pt.season AS INTEGER) BETWEEN 2019 AND 2021
-ORDER BY season DESC, player_name
-LIMIT 20;`,
+ORDER BY season DESC, player_name`,
           gav: `SELECT player_name, season, team_abbr, position, height, weight, src_position
 FROM memory.gav.global_player_season
 WHERE team_abbr = 'LAL' AND season BETWEEN 2019 AND 2021
-ORDER BY season DESC, player_name
-LIMIT 20;`
+ORDER BY season DESC, player_name`
         },
         {
           title: 'Affluenza media stagionale per squadra (2025)',
@@ -88,15 +86,13 @@ LEFT JOIN mongodb.lsdm.team_abbrev ta
 LEFT JOIN mongodb.lsdm.team_details td
   ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
 WHERE TRY_CAST(ts.season AS INTEGER) = 2025
-ORDER BY ts.attend DESC NULLS LAST
-LIMIT 10;`,
+ORDER BY ts.attend DESC NULLS LAST`,
           gav: `SELECT gts.season, gts.team_abbr, dts.team_name, gts.attend, gts.attend_g
 FROM memory.gav.global_team_season gts
 LEFT JOIN memory.gav.dim_team_season dts
   ON dts.season = gts.season AND dts.team_abbr = gts.team_abbr
 WHERE TRY_CAST(gts.season AS INTEGER) = 2025
-ORDER BY gts.attend DESC
-LIMIT 10;`
+ORDER BY gts.attend DESC`
         },
         {
           title: 'Team meta (coach + arena) per BOS/LAL nel 2020',
@@ -168,13 +164,11 @@ LEFT JOIN ss
 LEFT JOIN mongodb.lsdm.common_player_info cpi
   ON cpi.player_id = pt.player_id
 WHERE TRY_CAST(pt.season AS INTEGER) = 2016 AND UPPER(pt.team) = 'CLE'
-ORDER BY per DESC NULLS LAST
-LIMIT 10;`,
+ORDER BY per DESC NULLS LAST`,
           gav: `SELECT player_name, team_abbr, per, ts_percent, ws, vorp
 FROM memory.gav.global_player_season
 WHERE season = 2016 AND team_abbr = 'CLE'
-ORDER BY per DESC NULLS LAST
-LIMIT 10;`
+ORDER BY per DESC NULLS LAST`
         },
         {
           title: 'Partite con maggiore affluenza (2025) con normalizzazione di date/stagione',
@@ -190,13 +184,11 @@ LIMIT 10;`
 FROM mongodb.lsdm.games g
 WHERE COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season, 1, 4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) = 2025
   AND g.attendance IS NOT NULL
-ORDER BY attendance DESC
-LIMIT 10;`,
+ORDER BY attendance DESC`,
           gav: `SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_city, away_team_name, attendance
 FROM memory.gav.global_game
 WHERE season = 2025 AND attendance IS NOT NULL
-ORDER BY attendance DESC
-LIMIT 10;`
+ORDER BY attendance DESC`
         },
         {
           title: 'Triple-doubles per giocatore (2010–2020) dal CSV box score',
@@ -207,15 +199,13 @@ WHERE TRY_CAST(season AS INTEGER) BETWEEN 2010 AND 2020
   AND TRY_CAST(reb AS DOUBLE)  >= 10
   AND TRY_CAST(ast AS INTEGER) >= 10
 GROUP BY LOWER(player_name)
-ORDER BY triple_doubles DESC
-LIMIT 15;`,
+ORDER BY triple_doubles DESC`,
           gav: `SELECT player_name, COUNT(*) AS triple_doubles
 FROM memory.gav.player_game_box
 WHERE season BETWEEN 2010 AND 2020
   AND pts >= 10 AND reb >= 10 AND ast >= 10
 GROUP BY player_name
-ORDER BY triple_doubles DESC
-LIMIT 15;`
+ORDER BY triple_doubles DESC`
         },
         {
           title: 'Statistiche avanzate di squadra per stagione (LAL vs BOS, 2020)',
@@ -297,6 +287,7 @@ ORDER BY team_abbr;`
     </script>
   </body>
   </html>
+
 
 
 
