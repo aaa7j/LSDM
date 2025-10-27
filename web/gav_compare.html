@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Confronto Query: RAW vs GAV</title>
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+      .pair { background: var(--card, #111); border-radius: 10px; padding: 16px; margin: 16px 0; box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 1px 24px rgba(0,0,0,.3); }
+      .pair h2 { margin: 0 0 12px; font-size: 18px; }
+      .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .col { display: flex; flex-direction: column; }
+      .col .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+      .badge { font-size: 12px; color: var(--muted, #aaa); text-transform: uppercase; letter-spacing: .06em; }
+      pre { background: #0c0c0c; color: #dfe6ef; border-radius: 8px; padding: 10px 12px; overflow: auto; max-height: 380px; border: 1px solid rgba(255,255,255,.06); }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+      .btn { background: #2a6df4; color: #fff; border: 0; border-radius: 8px; padding: 8px 10px; cursor: pointer; font-weight: 600; }
+      .btn.secondary { background: #1f2330; color: #cfd5e3; border: 1px solid rgba(255,255,255,.08); }
+      .toolbar { display:flex; gap:8px; align-items:center; }
+      .note { color: var(--muted, #9aa4b2); font-size: 12px; margin-top: 6px; }
+      @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="inner">
+        <a class="brand" href="index.html">NBA Search</a>
+        <div class="nav">
+          <a href="index.html">Search</a>
+          <a href="#" class="active">RAW vs GAV</a>
+        </div>
+      </div>
+    </div>
+    <div class="wrap">
+      <h1>Confronto Query: RAW vs GAV</h1>
+      <p class="note">Obiettivo: mostrare, per ogni caso, la differenza di semplicità usando le viste GAV rispetto ai dataset grezzi. Le query restituiscono lo stesso risultato.</p>
+
+      <div id="pairs"></div>
+
+      <div class="note" style="margin-top:16px">
+        Esecuzione completa dal file consolidato: <code>trino/queries/views_vs_raw_5.sql</code><br/>
+        Comando: <code>java -jar trino-cli.jar --server http://localhost:8080 --file trino/queries/views_vs_raw_5.sql</code>
+      </div>
+    </div>
+
+    <script>
+      const blocks = [
+        {
+          title: 'Roster + posizione/fisico (LAL, 2019–2021)',
+          raw: `SELECT
+  COALESCE(LOWER(cpi.full_name), LOWER(pt.player))            AS player_name,
+  TRY_CAST(pt.season AS INTEGER)                              AS season,
+  UPPER(pt.team)                                              AS team_abbr,
+  COALESCE(cpi.position, UPPER(pt.pos), UPPER(ppg.pos))       AS position,
+  cpi.height, cpi.weight,
+  CASE WHEN cpi.position IS NOT NULL THEN 'common_player_info'
+       WHEN pt.pos IS NOT NULL THEN 'player_totals'
+       WHEN ppg.pos IS NOT NULL THEN 'player_per_game'
+  END                                                         AS src_position
+FROM mongodb.lsdm.player_totals pt
+LEFT JOIN postgresql.staging.player_per_game ppg
+  ON ppg.player_id = pt.player_id
+ AND TRY_CAST(ppg.season AS INTEGER) = TRY_CAST(pt.season AS INTEGER)
+ AND UPPER(ppg.team) = UPPER(pt.team)
+LEFT JOIN mongodb.lsdm.common_player_info cpi
+  ON cpi.player_id = pt.player_id
+WHERE UPPER(pt.team) = 'LAL' AND TRY_CAST(pt.season AS INTEGER) BETWEEN 2019 AND 2021
+ORDER BY season DESC, player_name
+LIMIT 20;`,
+          gav: `SELECT player_name, season, team_abbr, position, height, weight, src_position
+FROM memory.gav.global_player_season
+WHERE team_abbr = 'LAL' AND season BETWEEN 2019 AND 2021
+ORDER BY season DESC, player_name
+LIMIT 20;`
+        },
+        {
+          title: 'Affluenza media stagionale per squadra (2025)',
+          raw: `SELECT
+  TRY_CAST(ts.season AS INTEGER)                                   AS season,
+  COALESCE(ts.abbreviation, ta.abbreviation)                       AS team_abbr,
+  COALESCE(LOWER(ts.team), LOWER(ta.team_name), LOWER(td.nickname)) AS team_name,
+  ts.attend, ts.attend_g
+FROM postgresql.staging.team_summaries ts
+LEFT JOIN mongodb.lsdm.team_abbrev ta
+  ON TRY_CAST(ta.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER)
+ AND UPPER(ta.abbreviation)        = UPPER(ts.abbreviation)
+LEFT JOIN mongodb.lsdm.team_details td
+  ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
+WHERE TRY_CAST(ts.season AS INTEGER) = 2025
+ORDER BY ts.attend DESC NULLS LAST
+LIMIT 10;`,
+          gav: `SELECT gts.season, gts.team_abbr, dts.team_name, gts.attend, gts.attend_g
+FROM memory.gav.global_team_season gts
+LEFT JOIN memory.gav.dim_team_season dts
+  ON dts.season = gts.season AND dts.team_abbr = gts.team_abbr
+WHERE TRY_CAST(gts.season AS INTEGER) = 2025
+ORDER BY gts.attend DESC
+LIMIT 10;`
+        },
+        {
+          title: 'Team meta (coach + arena) per BOS/LAL nel 2020',
+          raw: `SELECT
+  TRY_CAST(ts.season AS INTEGER)                                           AS season,
+  COALESCE(ts.abbreviation, ta.abbreviation)                               AS team_abbr,
+  COALESCE(LOWER(ts.team), LOWER(ta.team_name), LOWER(td.nickname))        AS team_name,
+  LOWER(COALESCE(td.meta.head_coach, nhc.name))                            AS coach,
+  LOWER(COALESCE(ts.arena, td.meta.arena.name))                            AS arena_name,
+  CASE WHEN ts.arena IS NOT NULL THEN 'team_summaries' ELSE 'team_details' END AS src_arena,
+  CASE WHEN td.abbreviation IS NOT NULL THEN 'team_details'
+       WHEN nhc.name IS NOT NULL THEN 'nba_head_coaches' END               AS src_coach
+FROM postgresql.staging.team_summaries ts
+LEFT JOIN mongodb.lsdm.team_abbrev ta
+  ON TRY_CAST(ta.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER)
+ AND UPPER(ta.abbreviation) = UPPER(ts.abbreviation)
+LEFT JOIN mongodb.lsdm.team_details td
+  ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
+LEFT JOIN postgresql.staging.nba_head_coaches nhc
+  ON TRY_CAST(ts.season AS INTEGER) BETWEEN TRY_CAST(SUBSTRING(nhc.start_season, 1, 4) AS INTEGER)
+                     AND TRY_CAST(SUBSTRING(nhc.end_season,   1, 4) AS INTEGER)
+ AND REGEXP_LIKE(UPPER(nhc.teams), CONCAT('(^|[,\\s])', UPPER(ts.abbreviation), '([,\\s]|$)'))
+WHERE COALESCE(ts.abbreviation, ta.abbreviation) IN ('BOS','LAL')
+  AND TRY_CAST(ts.season AS INTEGER) = 2020
+ORDER BY team_abbr;`,
+          gav: `SELECT season, team_abbr, team_name, coach, arena_name, src_coach, src_arena
+FROM memory.gav.dim_team_season
+WHERE team_abbr IN ('BOS','LAL') AND season = 2020
+ORDER BY team_abbr;`
+        },
+        {
+          title: 'Top 10 PER in stagione (2016, CLE) con fallback e normalizzazione TS% ',
+          raw: `WITH adv AS (
+  SELECT player_id,
+         TRY_CAST(season AS INTEGER) AS season,
+         AVG(per)        AS per,
+         AVG(ts_percent) AS ts_percent,
+         AVG(ws)         AS ws,
+         AVG(bpm)        AS bpm,
+         AVG(vorp)       AS vorp
+  FROM postgresql.staging.player_advanced
+  GROUP BY 1,2
+), ss AS (
+  SELECT LOWER(player) AS player_name,
+         TRY_CAST(year AS INTEGER) AS season,
+         AVG(per)        AS per,
+         AVG(ts_percent) AS ts_percent,
+         AVG(ws)         AS ws,
+         AVG(vorp)       AS vorp
+  FROM postgresql.staging.seasons_stats
+  GROUP BY 1,2
+)
+SELECT
+  COALESCE(LOWER(cpi.full_name), LOWER(pt.player))                        AS player_name,
+  UPPER(pt.team)                                                          AS team_abbr,
+  COALESCE(adv.per, ss.per)                                               AS per,
+  CASE WHEN COALESCE(adv.ts_percent, ss.ts_percent) > 1
+       THEN COALESCE(adv.ts_percent, ss.ts_percent) / 100.0
+       ELSE COALESCE(adv.ts_percent, ss.ts_percent) END                   AS ts_percent,
+  COALESCE(adv.ws, ss.ws)                                                 AS ws,
+  COALESCE(adv.vorp, ss.vorp)                                             AS vorp
+FROM mongodb.lsdm.player_totals pt
+LEFT JOIN adv
+  ON adv.player_id = pt.player_id
+ AND adv.season    = TRY_CAST(pt.season AS INTEGER)
+LEFT JOIN ss
+  ON ss.player_name = LOWER(pt.player)
+ AND ss.season      = TRY_CAST(pt.season AS INTEGER)
+LEFT JOIN mongodb.lsdm.common_player_info cpi
+  ON cpi.player_id = pt.player_id
+WHERE TRY_CAST(pt.season AS INTEGER) = 2016 AND UPPER(pt.team) = 'CLE'
+ORDER BY per DESC NULLS LAST
+LIMIT 10;`,
+          gav: `SELECT player_name, team_abbr, per, ts_percent, ws, vorp
+FROM memory.gav.global_player_season
+WHERE season = 2016 AND team_abbr = 'CLE'
+ORDER BY per DESC NULLS LAST
+LIMIT 10;`
+        },
+        {
+          title: 'Partite con maggiore affluenza (2025) con normalizzazione di date/stagione',
+          raw: `SELECT
+  g.game_id,
+  TRY_CAST(g.date AS DATE) AS game_date,
+  COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season, 1, 4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) AS season,
+  LOWER(g.home.team_city)  AS home_team_city,
+  LOWER(g.home.team_name)  AS home_team_name,
+  LOWER(g.away.team_city)  AS away_team_city,
+  LOWER(g.away.team_name)  AS away_team_name,
+  TRY_CAST(g.attendance AS INTEGER) AS attendance
+FROM mongodb.lsdm.games g
+WHERE COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season, 1, 4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) = 2025
+  AND g.attendance IS NOT NULL
+ORDER BY attendance DESC
+LIMIT 10;`,
+          gav: `SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_city, away_team_name, attendance
+FROM memory.gav.global_game
+WHERE season = 2025 AND attendance IS NOT NULL
+ORDER BY attendance DESC
+LIMIT 10;`
+        },
+        {
+          title: 'Triple-doubles per giocatore (2010–2020) dal CSV box score',
+          raw: `SELECT LOWER(player_name) AS player_name, COUNT(*) AS triple_doubles
+FROM postgresql.staging.nba_player_box_score_stats_1950_2022
+WHERE TRY_CAST(season AS INTEGER) BETWEEN 2010 AND 2020
+  AND TRY_CAST(pts AS INTEGER) >= 10
+  AND TRY_CAST(reb AS DOUBLE)  >= 10
+  AND TRY_CAST(ast AS INTEGER) >= 10
+GROUP BY LOWER(player_name)
+ORDER BY triple_doubles DESC
+LIMIT 15;`,
+          gav: `SELECT player_name, COUNT(*) AS triple_doubles
+FROM memory.gav.player_game_box
+WHERE season BETWEEN 2010 AND 2020
+  AND pts >= 10 AND reb >= 10 AND ast >= 10
+GROUP BY player_name
+ORDER BY triple_doubles DESC
+LIMIT 15;`
+        },
+        {
+          title: 'Statistiche avanzate di squadra per stagione (LAL vs BOS, 2020)',
+          raw: `SELECT
+  TRY_CAST(ts.season AS INTEGER) AS season,
+  UPPER(ts.abbreviation)         AS team_abbr,
+  LOWER(ts.team)                 AS team_name,
+  ts.o_rtg,
+  ts.d_rtg,
+  ts.n_rtg,
+  ts.pace,
+  pg.pts AS points_per_game
+FROM postgresql.staging.team_summaries ts
+LEFT JOIN postgresql.staging.team_stats_per_100_poss t100
+  ON TRY_CAST(t100.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER)
+ AND UPPER(t100.abbreviation)        = UPPER(ts.abbreviation)
+LEFT JOIN postgresql.staging.team_stats_per_game pg
+  ON TRY_CAST(pg.season AS INTEGER)   = TRY_CAST(ts.season AS INTEGER)
+ AND UPPER(pg.abbreviation)          = UPPER(ts.abbreviation)
+WHERE TRY_CAST(ts.season AS INTEGER) = 2020
+  AND UPPER(ts.abbreviation) IN ('LAL','BOS')
+ORDER BY team_abbr;`,
+          gav: `SELECT
+  season,
+  team_abbr,
+  o_rtg,
+  d_rtg,
+  n_rtg,
+  pace,
+  points_per_game
+FROM memory.gav.global_team_season
+WHERE season = 2020
+  AND team_abbr IN ('LAL','BOS')
+ORDER BY team_abbr;`
+        }
+      ];
+
+      function copyText(text) {
+        navigator.clipboard.writeText(text).then(() => {}, () => {
+          const ta = document.createElement('textarea');
+          ta.value = text; document.body.appendChild(ta); ta.select();
+          try { document.execCommand('copy'); } catch (e) {}
+          ta.remove();
+        });
+      }
+
+      function render() {
+        const root = document.getElementById('pairs');
+        blocks.forEach((b, i) => {
+          const card = document.createElement('div');
+          card.className = 'pair';
+          card.innerHTML = `
+            <h2>${i+1}) ${b.title}</h2>
+            <div class="cols">
+              <div class="col">
+                <div class="head"><div class="badge">Senza GAV (raw)</div><div class="toolbar"><button class="btn secondary" data-copy="raw-${i}">Copia</button></div></div>
+                <pre><code id="raw-${i}"></code></pre>
+              </div>
+              <div class="col">
+                <div class="head"><div class="badge">Con GAV (vista)</div><div class="toolbar"><button class="btn secondary" data-copy="gav-${i}">Copia</button></div></div>
+                <pre><code id="gav-${i}"></code></pre>
+              </div>
+            </div>`;
+          root.appendChild(card);
+          document.getElementById(`raw-${i}`).textContent = b.raw;
+          document.getElementById(`gav-${i}`).textContent = b.gav;
+        });
+
+        document.addEventListener('click', (e) => {
+          const btn = e.target.closest('button[data-copy]');
+          if (!btn) return;
+          const id = btn.getAttribute('data-copy');
+          const el = document.getElementById(id);
+          if (el) copyText(el.textContent);
+        });
+      }
+
+      render();
+    </script>
+  </body>
+  </html>
+
+
+

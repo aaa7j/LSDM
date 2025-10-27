@@ -1,154 +1,225 @@
 erDiagram
-    GLOBAL_PLAYER {
-        int    player_id PK
-        string first_name
-        string last_name
-        string full_name
-        string position
-        string height
-        string weight
-        date   birth_date
-        string nationality
-        string college
-        int    experience
-        int    team_id FK
-        int    jersey_number
+
+    DIM_PLAYER {
+        varchar player_id PK
+        varchar full_name
+        varchar first_name
+        varchar last_name
+        varchar birthdate
+        varchar country
+        varchar college
+        varchar height
+        varchar weight
+        varchar team_abbr
+        varchar from_year
+        varchar to_year
+        varchar draft_year
+        varchar draft_round
+        varchar draft_number
     }
 
-    GLOBAL_TEAM {
-        int    team_id PK
-        string team_name
-        string city
-        string state
-        string arena
-        int    founded_year
-        int    championships_won
-        string coach
-        string team_colors
-        string conference
-        string division
+    GLOBAL_PLAYER_SEASON {
+        varchar  player_id FK
+        integer  season
+        varchar  team_abbr
+        varchar  player_name
+        varchar  position
+        varchar  height
+        varchar  weight
+        integer  g
+        integer  gs
+        double   pts
+        double   ast
+        double   trb
+        double   pts_per_game
+        double   ast_per_game
+        double   trb_per_game
+        double   per
+        double   ts_percent
+        double   ws
+        double   bpm
+        double   vorp
+        integer  experience_years
+        varchar  src_position
+    }
+
+    DIM_TEAM_SEASON {
+        integer  season
+        varchar  team_abbr
+        varchar  team_name
+        varchar  city
+        varchar  arena_name
+        integer  arena_capacity
+        varchar  coach
+        varchar  league
+        varchar  src_arena
+        varchar  src_coach
+    }
+
+    GLOBAL_TEAM_SEASON {
+        varchar  season
+        varchar  team_abbr
+        integer  attend
+        integer  attend_g
+        double   mov
+        double   sos
+        double   srs
+        double   o_rtg
+        double   d_rtg
+        double   n_rtg
+        double   pace
+        double   f_tr
+        double   x3p_ar
+        double   ts_percent
+        double   e_fg_percent
+        double   tov_percent
+        double   orb_percent
+        double   ft_fga
+        double   opp_e_fg_percent
+        double   opp_tov_percent
+        double   drb_percent
+        double   opp_ft_fga
+        integer  games_pg
+        double   tpg_minutes
+        double   tpg_fg
+        double   tpg_fga
+        double   tpg_fg_percent
+        double   tpg_x3p
+        double   tpg_x3pa
+        double   tpg_x3p_percent
+        double   tpg_x2p
+        double   tpg_x2pa
+        double   tpg_x2p_percent
+        double   tpg_ft
+        double   tpg_fta
+        double   tpg_ft_percent
+        double   tpg_orb
+        double   tpg_drb
+        double   tpg_trb
+        double   tpg_ast
+        double   tpg_stl
+        double   tpg_blk
+        double   tpg_tov
+        double   tpg_pf
+        double   tpg_pts
+        double   fg_per_100_poss
+        double   fga_per_100_poss
+        double   t100_fg_percent
+        double   x3p_per_100_poss
+        double   x3pa_per_100_poss
+        double   t100_x3p_percent
+        double   x2p_per_100_poss
+        double   x2pa_per_100_poss
+        double   t100_x2p_percent
+        double   ft_per_100_poss
+        double   fta_per_100_poss
+        double   t100_ft_percent
+        double   orb_per_100_poss
+        double   drb_per_100_poss
+        double   trb_per_100_poss
+        double   ast_per_100_poss
+        double   stl_per_100_poss
+        double   blk_per_100_poss
+        double   tov_per_100_poss
+        double   pf_per_100_poss
+        double   pts_per_100_poss
+        double   opp_fg_per_100_poss
+        double   opp_fga_per_100_poss
+        double   opp_fg_percent
+        double   opp_x3p_per_100_poss
+        double   opp_x3pa_per_100_poss
+        double   opp_x3p_percent
+        double   opp_x2p_per_100_poss
+        double   opp_x2pa_per_100_poss
+        double   opp_x2p_percent
+        double   opp_ft_per_100_poss
+        double   opp_fta_per_100_poss
+        double   opp_ft_percent
+        double   opp_orb_per_100_poss
+        double   opp_drb_per_100_poss
+        double   opp_trb_per_100_poss
+        double   opp_ast_per_100_poss
+        double   opp_stl_per_100_poss
+        double   opp_blk_per_100_poss
+        double   opp_tov_per_100_poss
+        double   opp_pf_per_100_poss
+        double   opp_pts_per_100_poss
+        double   tot_minutes
+        double   tot_fg
+        double   tot_fga
+        double   tot_fg_percent
+        double   tot_x3p
+        double   tot_x3pa
+        double   tot_x3p_percent
+        double   tot_x2p
+        double   tot_x2pa
+        double   tot_x2p_percent
+        double   tot_ft
+        double   tot_fta
+        double   tot_ft_percent
+        double   tot_orb
+        double   tot_drb
+        double   tot_trb
+        double   tot_ast
+        double   tot_stl
+        double   tot_blk
+        double   tot_tov
+        double   tot_pf
+        double   tot_pts
     }
 
     GLOBAL_GAME {
-        int    game_id PK
-        date   game_date
-        int    home_team_id FK
-        int    away_team_id FK
-        string location
-        int    attendance
-        string game_duration
-        int    final_score_home
-        int    final_score_away
-        boolean overtime_flag
-        int    period_count
+        varchar game_id PK
+        date    game_date
+        bigint  season
+        varchar home_team_id
+        varchar home_team_city
+        varchar home_team_name
+        integer home_score
+        varchar away_team_id
+        varchar away_team_city
+        varchar away_team_name
+        integer away_score
+        varchar winner
+        integer attendance
     }
 
-    GLOBAL_PLAY_BY_PLAY {
-        int    game_id FK
-        int    eventnum
-        int    eventmsgtype
-        int    eventmsgactiontype
-        int    period
-        string wctimestring
-        string pctimestring
-        string homedescription
-        string neutraldescription
-        string visitordescription
-        string score
-        string scoremargin
-        int    person1type
-        int    player1_id FK
-        string player1_name
-        int    player1_team_id FK
-        string player1_team_city
-        string player1_team_nickname
-        string player1_team_abbreviation
-        int    person2type
-        int    player2_id FK
-        string player2_name
-        int    player2_team_id FK
-        string player2_team_city
-        string player2_team_nickname
-        string player2_team_abbreviation
-        int    person3type
-        int    player3_id FK
-        string player3_name
-        int    player3_team_id FK
-        string player3_team_city
-        string player3_team_nickname
-        string player3_team_abbreviation
-        boolean video_available_flag
+    PLAYER_GAME_BOX {
+        integer season
+        integer game_id
+        varchar player_name
+        varchar team_abbr
+        date    game_date
+        varchar matchup
+        varchar wl
+        integer minutes
+        integer fgm
+        double  fga
+        double  fg_pct
+        double  fg3m
+        double  fg3a
+        double  fg3_pct
+        integer ftm
+        double  fta
+        double  ft_pct
+        double  oreb
+        double  dreb
+        double  reb
+        double  ast
+        double  stl
+        double  blk
+        double  tov
+        double  pf
+        integer pts
+        double  plus_minus
     }
 
-    GLOBAL_LINE_SCORE {
-        int game_id FK
-        int team_id FK
-        int period
-        int points
-    }
+    DIM_PLAYER ||--o{ GLOBAL_PLAYER_SEASON : "player_id"
 
-    GLOBAL_OTHER_STATS {
-        int game_id FK
-        int team_id FK
-        int points
-        int rebounds
-        int assists
-        int steals
-        int blocks
-        int turnovers
-        int fouls
-    }
+    DIM_TEAM_SEASON ||--o{ GLOBAL_TEAM_SEASON : "season, team_abbr"
 
-    GLOBAL_DRAFT_COMBINE {
-        int   player_id FK
-        int   year
-        float height_measurement
-        float weight_measurement
-        float wingspan
-        float vertical_jump
-        int   bench_press_reps
-        float shuttle_run_time
-    }
+    DIM_TEAM_SEASON ||--o{ GLOBAL_GAME : "team_abbr ↔ home_team_id / away_team_id"
 
-    GLOBAL_DRAFT_HISTORY {
-        int player_id FK
-        int team_id FK
-        int draft_year
-        int draft_round
-        int draft_pick
-        int overall_pick
-    }
+    GLOBAL_GAME ||--o{ PLAYER_GAME_BOX : "game_id"
 
-    GLOBAL_OFFICIAL {
-        int    official_id PK
-        string official_name
-        int    experience
-    }
-
-    GLOBAL_GAME_OFFICIAL {
-        int    game_id FK
-        int    official_id FK
-        string role
-    }
-
-    %% Relationships
-    GLOBAL_PLAYER }o--|| GLOBAL_TEAM : "current member of"
-    GLOBAL_GAME ||--|| GLOBAL_TEAM : "home team"
-    GLOBAL_GAME ||--|| GLOBAL_TEAM : "away team"
-
-    GLOBAL_GAME ||--o{ GLOBAL_PLAY_BY_PLAY : "has events"
-    GLOBAL_PLAYER ||--o{ GLOBAL_PLAY_BY_PLAY : "involved"
-    GLOBAL_TEAM   ||--o{ GLOBAL_PLAY_BY_PLAY : "team context"
-
-    GLOBAL_GAME ||--o{ GLOBAL_LINE_SCORE : "has line score"
-    GLOBAL_TEAM ||--o{ GLOBAL_LINE_SCORE : "scored in"
-
-    GLOBAL_GAME ||--o{ GLOBAL_OTHER_STATS : "team stats"
-    GLOBAL_TEAM ||--o{ GLOBAL_OTHER_STATS : "team stats"
-
-    GLOBAL_PLAYER ||--o{ GLOBAL_DRAFT_COMBINE : "combine measures"
-    GLOBAL_PLAYER ||--o{ GLOBAL_DRAFT_HISTORY : "drafted in"
-    GLOBAL_TEAM   ||--o{ GLOBAL_DRAFT_HISTORY : "drafted by"
-
-    GLOBAL_OFFICIAL ||--o{ GLOBAL_GAME_OFFICIAL : "assigned to"
-    GLOBAL_GAME     ||--o{ GLOBAL_GAME_OFFICIAL : "has officials"
+    DIM_TEAM_SEASON ||--o{ PLAYER_GAME_BOX : "team_abbr"

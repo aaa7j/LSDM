@@ -73,12 +73,12 @@ GROUP BY src_position
 ORDER BY rows DESC;
 
 SELECT 'src_arena share' AS check, src_arena, COUNT(*) AS rows
-FROM memory.gav.global_team_season
+FROM memory.gav.dim_team_season
 GROUP BY src_arena
 ORDER BY rows DESC;
 
 SELECT 'src_coach share' AS check, src_coach, COUNT(*) AS rows
-FROM memory.gav.global_team_season
+FROM memory.gav.dim_team_season
 GROUP BY src_coach
 ORDER BY rows DESC;
 
@@ -88,6 +88,7 @@ FROM memory.gav.global_player_season;
 
 SELECT 'season bounds team' AS check, MIN(season) AS min_season, MAX(season) AS max_season
 FROM memory.gav.global_team_season;
+
 
 
 
