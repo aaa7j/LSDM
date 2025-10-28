@@ -345,6 +345,35 @@ def _apply_limit(sql: str, n: int) -> str:
     return s
 
 
+def get_valid_attendance_seasons(host: str, port: int, user: str) -> List[int]:
+    """Return seasons where team attendance is consistent and populated.
+    Criteria: >=20 teams with both attend and attend_g; average relative error
+    between attend and attend_g*games_pg <= 10%.
+    """
+    sql = """
+WITH s AS (
+  SELECT season,
+         TRY_CAST(attend   AS DOUBLE) AS attend,
+         TRY_CAST(attend_g AS DOUBLE) AS attend_g,
+         TRY_CAST(games_pg AS DOUBLE) AS games
+  FROM memory.gav.global_team_season
+  WHERE attend IS NOT NULL AND attend_g IS NOT NULL AND games_pg IS NOT NULL AND TRY_CAST(games_pg AS DOUBLE) > 0
+), agg AS (
+  SELECT season,
+         COUNT(*) AS teams,
+         AVG( CASE WHEN attend <> 0 THEN ABS(attend - (attend_g*games)) / attend END ) AS rel_err
+  FROM s
+  GROUP BY season
+)
+SELECT TRY_CAST(season AS INTEGER) AS season
+FROM agg
+WHERE teams >= 20 AND rel_err <= 0.10
+ORDER BY season
+"""
+    df = run_query(sql, host, port, user, catalog="memory", schema="gav", max_rows=10000)
+    seasons: List[int] = [int(x) for x in df["season"].dropna().tolist()] if not df.empty else []
+    return seasons
+
 def apply_gav_views(host: str, port: int, user: str) -> str:
     """Executes trino/views/gav.sql sequentially (splits on ';')."""
     path = os.path.join("trino", "views", "gav.sql")
@@ -596,12 +625,8 @@ FROM memory.gav.global_player_season
 WHERE season = {season} AND team_abbr = '{team}'
 ORDER BY per DESC NULLS LAST"""
         elif "Partite con maggiore affluenza" in case.title:
-            season = st.number_input("Season", 1950, 2035, 2025, step=1)
-            dyn_gav = f"""
-SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_city, away_team_name, attendance
-FROM memory.gav.global_game
-WHERE season = {season} AND attendance IS NOT NULL
-ORDER BY attendance DESC"""
+            st.caption("Nessun parametro per questo caso (dati disponibili: 2025)")
+            dyn_gav = case.sql_gav
         elif "Triple-doubles per giocatore" in case.title:
             start, end = st.slider("Intervallo stagioni", 1950, 2035, (2010, 2020))
             dyn_gav = f"""
@@ -629,11 +654,25 @@ WHERE season = {season}
   AND team_abbr IN ('{team1}','{team2}')
 ORDER BY team_abbr;"""
         elif "Affluenza media stagionale" in case.title:
-            season = st.number_input("Season", 1950, 2035, 2025, step=1)
+            # Determine valid seasons silently and restrict selection to them
+            seasons_ok = st.session_state.get("valid_attendance_seasons")
+            if seasons_ok is None:
+                try:
+                    seasons_ok = get_valid_attendance_seasons(host, int(port), user)
+                except Exception:
+                    seasons_ok = []
+                st.session_state["valid_attendance_seasons"] = seasons_ok
+
+            if not seasons_ok:
+                # Fallback to a safe default when none detected
+                seasons_ok = [2025]
+
+            sel_idx = len(seasons_ok) - 1 if seasons_ok else 0
+            season = st.selectbox("Season", options=seasons_ok, index=max(0, sel_idx))
             dyn_gav = f"""
 SELECT season, team_abbr, team_name, attend, attend_g
 FROM memory.gav.global_team_season
-WHERE TRY_CAST(season AS INTEGER) = {season}
+WHERE season = {int(season)}
 ORDER BY attend DESC NULLS LAST"""
 
     col1, col2 = st.columns(2)
