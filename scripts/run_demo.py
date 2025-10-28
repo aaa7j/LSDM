@@ -199,39 +199,33 @@ def main():
         # Schemas + staging DDL
         run_sql(conn, os.path.join(ROOT, 'db', '01_schemas.sql'))
         run_sql(conn, os.path.join(ROOT, 'db', '02_staging_tables.sql'))
-        # Remove JSON placeholders: keep JSON only in Mongo
+        # Remove only truly legacy tables (keep staging tables we just created)
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    DROP TABLE IF EXISTS staging.player_totals CASCADE;
-                    DROP TABLE IF EXISTS staging.team_abbrev CASCADE;
-                    DROP TABLE IF EXISTS staging.team_details CASCADE;
-                    DROP TABLE IF EXISTS staging.player_bio CASCADE;
-                    DROP TABLE IF EXISTS staging.games CASCADE;
-                    -- Drop duplicate/legacy tables in favor of canonical ones
-                    DROP TABLE IF EXISTS staging.opponent_stats_per_100 CASCADE;
-                    DROP TABLE IF EXISTS staging.team_stats_per_100 CASCADE;
+                    -- Legacy/old names that may exist in some setups
                     DROP TABLE IF EXISTS staging.player_box_score CASCADE;
                     DROP TABLE IF EXISTS staging.advanced CASCADE;
                     """
                 )
             conn.commit()
-            print("[CLEANUP] Dropped JSON placeholders and duplicate legacy tables from Postgres staging")
+            print("[CLEANUP] Dropped legacy tables from Postgres staging (kept current staging tables)")
         except Exception as e:
             try:
                 conn.rollback()
             except Exception:
                 pass
-            print("[WARN] could not drop JSON placeholders:", e)
+            print("[WARN] cleanup step had issues:", e)
 
         # Load CSVs into staging
         csv_map = [
-            # ATTENZIONE: niente duplicati con Mongo. Non carichiamo player_totals/team_abbrev in Postgres.
+            # Core CSVs
             ('staging.player_per_game', os.path.join(data_dir, 'Player Per Game.csv')),
             ('staging.player_advanced', os.path.join(data_dir, 'Advanced.csv')),
             ('staging.team_summaries', os.path.join(data_dir, 'Team Summaries.csv')),
-            # Altri CSV utili (opzionali):
+            ('staging.nba_head_coaches', os.path.join(data_dir, 'NBA_head_coaches.csv')),
+            # Optional but helpful CSVs (align DDL with headers)
             ('staging.team_stats_per_game', os.path.join(data_dir, 'Team Stats Per Game.csv')),
             ('staging.team_stats_per_100', os.path.join(data_dir, 'Team Stats Per 100 Poss.csv')),
             ('staging.team_totals', os.path.join(data_dir, 'Team Totals.csv')),
@@ -239,7 +233,6 @@ def main():
             ('staging.player_shooting', os.path.join(data_dir, 'Player Shooting.csv')),
             ('staging.player_play_by_play', os.path.join(data_dir, 'Player Play By Play.csv')),
             ('staging.seasons_stats', os.path.join(data_dir, 'Seasons_Stats.csv')),
-            ('staging.nba_head_coaches', os.path.join(data_dir, 'NBA_head_coaches.csv')),
         ]
         for table, path in csv_map:
             if os.path.exists(path):

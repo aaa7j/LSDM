@@ -182,16 +182,16 @@ SELECT
   ts.drb_percent, ts.opp_ft_fga,
   -- Per-team aggregates (team_stats_per_game)
   tpg.g AS games_pg,
-  tpg.mp AS tpg_minutes,
-  tpg.fg AS tpg_fg, tpg.fga AS tpg_fga, tpg.fg_percent AS tpg_fg_percent,
-  tpg.x3p AS tpg_x3p, tpg.x3pa AS tpg_x3pa, tpg.x3p_percent AS tpg_x3p_percent,
-  tpg.x2p AS tpg_x2p, tpg.x2pa AS tpg_x2pa, tpg.x2p_percent AS tpg_x2p_percent,
-  tpg.ft AS tpg_ft, tpg.fta AS tpg_fta, tpg.ft_percent AS tpg_ft_percent,
-  tpg.orb AS tpg_orb, tpg.drb AS tpg_drb, tpg.trb AS tpg_trb, tpg.ast AS tpg_ast,
-  tpg.stl AS tpg_stl, tpg.blk AS tpg_blk, tpg.tov AS tpg_tov, tpg.pf AS tpg_pf, tpg.pts AS tpg_pts,
+  tpg.mp_per_game AS tpg_minutes,
+  tpg.fg_per_game AS tpg_fg, tpg.fga_per_game AS tpg_fga, tpg.fg_percent AS tpg_fg_percent,
+  tpg.x3p_per_game AS tpg_x3p, tpg.x3pa_per_game AS tpg_x3pa, tpg.x3p_percent AS tpg_x3p_percent,
+  tpg.x2p_per_game AS tpg_x2p, tpg.x2pa_per_game AS tpg_x2pa, tpg.x2p_percent AS tpg_x2p_percent,
+  tpg.ft_per_game AS tpg_ft, tpg.fta_per_game AS tpg_fta, tpg.ft_percent AS tpg_ft_percent,
+  tpg.orb_per_game AS tpg_orb, tpg.drb_per_game AS tpg_drb, tpg.trb_per_game AS tpg_trb, tpg.ast_per_game AS tpg_ast,
+  tpg.stl_per_game AS tpg_stl, tpg.blk_per_game AS tpg_blk, tpg.tov_per_game AS tpg_tov, tpg.pf_per_game AS tpg_pf, tpg.pts_per_game AS tpg_pts,
   -- Derived: points per game with fallback from team_totals when per-game table is missing
   COALESCE(
-    tpg.pts,
+    tpg.pts_per_game,
     CASE
       WHEN tot.pts IS NOT NULL AND tot.g IS NOT NULL AND TRY_CAST(tot.g AS DOUBLE) <> 0 THEN TRY_CAST(tot.pts AS DOUBLE) / TRY_CAST(tot.g AS DOUBLE)
     END
@@ -223,9 +223,9 @@ SELECT
 FROM postgresql.staging.team_summaries ts
 LEFT JOIN postgresql.staging.team_stats_per_game tpg
   ON TRY_CAST(tpg.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER) AND UPPER(tpg.abbreviation) = UPPER(ts.abbreviation)
-LEFT JOIN postgresql.staging.team_stats_per_100_poss t100
+LEFT JOIN postgresql.staging.team_stats_per_100 t100
   ON TRY_CAST(t100.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER) AND UPPER(t100.abbreviation) = UPPER(ts.abbreviation)
-LEFT JOIN postgresql.staging.opponent_stats_per_100_poss opp
+LEFT JOIN postgresql.staging.opponent_stats_per_100 opp
   ON TRY_CAST(opp.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER) AND UPPER(opp.abbreviation) = UPPER(ts.abbreviation)
 LEFT JOIN postgresql.staging.team_totals tot
   ON TRY_CAST(tot.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER) AND UPPER(tot.abbreviation) = UPPER(ts.abbreviation)
@@ -299,31 +299,97 @@ FROM mongodb.lsdm.common_player_info cpi;
 
 -- Team dimension (from team_details)
 CREATE OR REPLACE VIEW memory.gav.dim_team_season AS
-SELECT DISTINCT
-  TRY_CAST(ts.season AS INTEGER)                                         AS season,
-  COALESCE(ts.abbreviation, ta.abbreviation)                             AS team_abbr,
-  COALESCE(LOWER(ts.team), LOWER(ta.team_name), LOWER(td.nickname))      AS team_name,
-  LOWER(td.meta.city)                                                    AS city,
-  LOWER(COALESCE(ts.arena, td.meta.arena.name))                          AS arena_name,
-  TRY_CAST(td.meta.arena.capacity AS INTEGER)                            AS arena_capacity,
-  LOWER(COALESCE(td.meta.head_coach, nhc.name))                          AS coach,
-  ts.lg                                                                  AS league,
-  CASE WHEN ts.arena IS NOT NULL THEN 'team_summaries' ELSE 'team_details' END AS src_arena,
-  CASE WHEN td.abbreviation IS NOT NULL THEN 'team_details'
-       WHEN nhc.name IS NOT NULL THEN 'nba_head_coaches' END               AS src_coach
-FROM postgresql.staging.team_summaries ts
-LEFT JOIN mongodb.lsdm.team_abbrev ta
-  ON TRY_CAST(ta.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER)
- AND UPPER(ta.abbreviation) = UPPER(ts.abbreviation)
-LEFT JOIN mongodb.lsdm.team_details td
-  ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
-LEFT JOIN postgresql.staging.nba_head_coaches nhc
-  ON TRY_CAST(ts.season AS INTEGER) BETWEEN TRY_CAST(SUBSTRING(nhc.start_season, 1, 4) AS INTEGER)
-                     AND TRY_CAST(SUBSTRING(nhc.end_season,   1, 4) AS INTEGER)
- AND REGEXP_LIKE(UPPER(nhc.teams), CONCAT('(^|[,\\s])', UPPER(ts.abbreviation), '([,\\s]|$)'))
-WHERE ts.season IS NOT NULL
-  AND COALESCE(ts.abbreviation, ta.abbreviation) IS NOT NULL
-  AND COALESCE(ts.abbreviation, ta.abbreviation) <> '';
+WITH base AS (
+  SELECT DISTINCT
+    TRY_CAST(ts.season AS INTEGER)                                         AS season,
+    UPPER(COALESCE(ts.abbreviation, ta.abbreviation))                      AS team_abbr,
+    COALESCE(LOWER(ts.team), LOWER(ta.team_name), LOWER(td.nickname))      AS team_name,
+    LOWER(td.meta.city)                                                    AS city,
+    LOWER(COALESCE(ts.arena, td.meta.arena.name))                          AS arena_name,
+    TRY_CAST(td.meta.arena.capacity AS INTEGER)                            AS arena_capacity,
+    LOWER(td.meta.head_coach)                                              AS td_head_coach,
+    ts.lg                                                                  AS league
+  FROM postgresql.staging.team_summaries ts
+  LEFT JOIN mongodb.lsdm.team_abbrev ta
+    ON TRY_CAST(ta.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER)
+   AND UPPER(ta.abbreviation) = UPPER(ts.abbreviation)
+  LEFT JOIN mongodb.lsdm.team_details td
+    ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
+  WHERE ts.season IS NOT NULL
+    AND COALESCE(ts.abbreviation, ta.abbreviation) IS NOT NULL
+    AND COALESCE(ts.abbreviation, ta.abbreviation) <> ''
+), nhc_exp AS (
+  SELECT
+    nhc.name,
+    -- normalize years
+    TRY_CAST(nhc.start_season_short AS INTEGER) AS coach_start,
+    TRY_CAST(nhc.end_season_short   AS INTEGER) AS coach_end,
+    -- explode team list preserving order
+    t.team_code,
+    t.ord,
+    COALESCE(NULLIF(TRY_CAST(nhc.num_of_teams AS INTEGER), 0), CARDINALITY(SPLIT(REGEXP_REPLACE(UPPER(nhc.teams), '\\s+', ''), ',')), 1) AS nteams,
+    -- compute naive per-team tenure segments across career
+    CAST(TRY_CAST(nhc.start_season_short AS INTEGER) + FLOOR((t.ord - 1) * (TRY_CAST(nhc.end_season_short AS INTEGER) - TRY_CAST(nhc.start_season_short AS INTEGER) + 1) / NULLIF(COALESCE(NULLIF(TRY_CAST(nhc.num_of_teams AS INTEGER), 0), CARDINALITY(SPLIT(REGEXP_REPLACE(UPPER(nhc.teams), '\\s+', ''), ',')), 1), 0)) AS INTEGER) AS seg_start,
+    CAST(TRY_CAST(nhc.start_season_short AS INTEGER) + FLOOR(t.ord * (TRY_CAST(nhc.end_season_short AS INTEGER) - TRY_CAST(nhc.start_season_short AS INTEGER) + 1) / NULLIF(COALESCE(NULLIF(TRY_CAST(nhc.num_of_teams AS INTEGER), 0), CARDINALITY(SPLIT(REGEXP_REPLACE(UPPER(nhc.teams), '\\s+', ''), ',')), 1), 0)) - 1 AS INTEGER) AS seg_end
+  FROM postgresql.staging.nba_head_coaches nhc
+  CROSS JOIN UNNEST(SPLIT(REGEXP_REPLACE(UPPER(nhc.teams), '\\s+', ''), ',')) WITH ORDINALITY AS t(team_code, ord)
+), mapped AS (
+  SELECT
+    name,
+    coach_start,
+    coach_end,
+    -- canonicalize historical codes to a single modern code
+    CASE
+      WHEN team_code IN ('GOS','SFW','PHW') THEN 'GSW'
+      WHEN team_code IN ('NOH','NOK') THEN 'NOP'
+      WHEN team_code IN ('NJN','BKN') THEN 'BRK'
+      WHEN team_code IN ('SEA') THEN 'OKC'
+      WHEN team_code IN ('WSB','BAL','WSH') THEN 'WAS'
+      WHEN team_code IN ('SDC','BUF') THEN 'LAC'
+      WHEN team_code IN ('CHH','CHA') THEN 'CHO'
+      WHEN team_code IN ('VAN') THEN 'MEM'
+      WHEN team_code IN ('KCO','KCK','CIN','ROC') THEN 'SAC'
+      WHEN team_code IN ('MNL') THEN 'LAL'
+      WHEN team_code IN ('SYR') THEN 'PHI'
+      WHEN team_code IN ('FTW') THEN 'DET'
+      WHEN team_code IN ('PHO') THEN 'PHX'
+      WHEN team_code IN ('SAN') THEN 'SAS'
+      ELSE team_code
+    END AS canon_team,
+    seg_start,
+    seg_end
+  FROM nhc_exp
+), cand AS (
+  SELECT
+    b.*, m.name AS nhc_name, m.seg_start, m.seg_end,
+    CASE WHEN m.name IS NOT NULL THEN 0 ELSE 1 END AS prio_src,
+    CASE WHEN LOWER(m.name) = b.td_head_coach THEN 0 ELSE 1 END AS td_match,
+    LEAST(ABS(b.season - m.seg_start), ABS(b.season - m.seg_end)) AS dist
+  FROM base b
+  LEFT JOIN mapped m
+    ON UPPER(b.team_abbr) = m.canon_team
+   AND b.season BETWEEN m.seg_start AND m.seg_end
+), best AS (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY season, team_abbr
+    ORDER BY prio_src ASC, td_match ASC, dist ASC, LOWER(COALESCE(nhc_name, td_head_coach)) ASC
+  ) AS rn
+  FROM cand
+)
+SELECT
+  season,
+  team_abbr,
+  team_name,
+  city,
+  arena_name,
+  arena_capacity,
+  COALESCE(LOWER(nhc_name), td_head_coach) AS coach,
+  league,
+  CASE WHEN arena_name IS NOT NULL THEN 'team_summaries' ELSE 'team_details' END AS src_arena,
+  CASE WHEN nhc_name IS NOT NULL THEN 'nba_head_coaches'
+       WHEN td_head_coach IS NOT NULL THEN 'team_details' END AS src_coach
+FROM best
+WHERE rn = 1;
 
 -- Player game box scores (from large historical CSV)
 CREATE OR REPLACE VIEW memory.gav.player_game_box AS
@@ -356,3 +422,4 @@ SELECT
   pts,
   TRY_CAST(plus_minus AS DOUBLE) AS plus_minus
 FROM postgresql.staging.nba_player_box_score_stats_1950_2022;
+
