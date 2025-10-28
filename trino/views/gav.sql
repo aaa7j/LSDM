@@ -63,6 +63,7 @@ joined AS (
     COALESCE(cpi_full_name, player_raw)                          AS player_name,
     season,
     team_abbr,
+    pt_player_id                                                  AS player_id_pt,
     COALESCE(UPPER(cpi_pos), pt_pos)                             AS position,
     CAST(ROUND(
       CASE WHEN cpi_height IS NOT NULL AND REGEXP_LIKE(cpi_height, '^[0-9]+-[0-9]+$')
@@ -92,12 +93,14 @@ SELECT
   j.weight_kg                                    AS weight_kg,
   j.g, j.gs, j.pts, j.ast, j.trb,
   ppg.pts_per_game, ppg.ast_per_game, ppg.trb_per_game,
-  COALESCE(adv.per, ss.per)                      AS per,
-  CASE WHEN COALESCE(adv.ts_percent, ss.ts_percent) > 1 THEN COALESCE(adv.ts_percent, ss.ts_percent) / 100.0
-       ELSE COALESCE(adv.ts_percent, ss.ts_percent) END       AS ts_percent,
-  COALESCE(adv.ws, ss.ws)                        AS ws,
+  ROUND(COALESCE(adv.per, ss.per), 1)            AS per,
+  ROUND(CASE WHEN COALESCE(adv.ts_percent, ss.ts_percent) <= 1
+             THEN 100.0 * COALESCE(adv.ts_percent, ss.ts_percent)
+             ELSE COALESCE(adv.ts_percent, ss.ts_percent)
+        END, 1)                                   AS ts_percent,
+  ROUND(COALESCE(adv.ws, ss.ws), 1)              AS ws,
   adv.bpm,
-  COALESCE(adv.vorp, ss.vorp)                    AS vorp,
+  ROUND(COALESCE(adv.vorp, ss.vorp), 1)          AS vorp,
   psi.experience                                 AS experience_years,
   j.src_position
 FROM joined j
@@ -111,7 +114,8 @@ LEFT JOIN (
   FROM postgresql.staging.player_per_game
   GROUP BY 1,2,3
 ) ppg
-  ON ppg.player_id = j.player_id AND ppg.season = j.season AND ppg.team_abbr = j.team_abbr
+  ON (ppg.player_id = j.player_id OR ppg.player_id = j.player_id_pt)
+ AND ppg.season = j.season AND ppg.team_abbr = j.team_abbr
 LEFT JOIN (
   SELECT player_id,
          TRY_CAST(season AS INTEGER) AS season,
@@ -123,7 +127,8 @@ LEFT JOIN (
   FROM postgresql.staging.player_advanced
   GROUP BY 1,2
 ) adv
-  ON adv.player_id = j.player_id AND adv.season = j.season
+  ON (adv.player_id = j.player_id OR adv.player_id = j.player_id_pt)
+ AND adv.season = j.season
 LEFT JOIN (
   SELECT player_id,
          TRY_CAST(season AS INTEGER) AS season,
@@ -142,15 +147,34 @@ LEFT JOIN (
   FROM postgresql.staging.seasons_stats
   GROUP BY 1,2
 ) ss
-  ON ss.player_name = LOWER(j.player_name) AND ss.season = j.season;
+  ON REGEXP_REPLACE(TRANSLATE(LOWER(j.player_name), 'áàäâãåéèëêíìïîóòöôõúùüûñçčćšžđ', 'aaaaaaeeeeiiiiooooouuuuncccszd'), '[^a-z0-9]', '') = ss.player_name
+ AND ss.season = j.season;
 
 -- Global team per-season view (comprehensive metrics)
 CREATE OR REPLACE VIEW memory.gav.global_team_season AS
 SELECT
-  TRY_CAST(ts.season AS INTEGER)                                         AS season,
+  COALESCE(
+    TRY_CAST(ts.season AS INTEGER),
+    TRY_CAST(SUBSTR(CAST(ts.season AS VARCHAR), 1, 4) AS INTEGER)
+  )                                                                      AS season,
   COALESCE(ts.abbreviation, tpg.abbreviation, t100.abbreviation, ta.abbreviation) AS team_abbr,
   COALESCE(LOWER(ts.team), LOWER(ta.team_name))                          AS team_name,
-  ts.attend, ts.attend_g,
+  COALESCE(
+    TRY_CAST(REPLACE(CAST(ts.attend   AS VARCHAR), ',', '') AS DOUBLE),
+    CASE
+      WHEN TRY_CAST(REPLACE(CAST(ts.attend_g AS VARCHAR), ',', '') AS DOUBLE) IS NOT NULL
+       AND COALESCE(TRY_CAST(tpg.g AS DOUBLE), TRY_CAST(tot.g AS DOUBLE)) > 0
+      THEN TRY_CAST(REPLACE(CAST(ts.attend_g AS VARCHAR), ',', '') AS DOUBLE) * COALESCE(TRY_CAST(tpg.g AS DOUBLE), TRY_CAST(tot.g AS DOUBLE))
+    END
+  ) AS attend,
+  COALESCE(
+    TRY_CAST(REPLACE(CAST(ts.attend_g AS VARCHAR), ',', '') AS DOUBLE),
+    CASE
+      WHEN TRY_CAST(REPLACE(CAST(ts.attend   AS VARCHAR), ',', '') AS DOUBLE) IS NOT NULL
+       AND COALESCE(TRY_CAST(tpg.g AS DOUBLE), TRY_CAST(tot.g AS DOUBLE)) > 0
+      THEN TRY_CAST(REPLACE(CAST(ts.attend   AS VARCHAR), ',', '') AS DOUBLE) / COALESCE(TRY_CAST(tpg.g AS DOUBLE), TRY_CAST(tot.g AS DOUBLE))
+    END
+  ) AS attend_g,
   -- Summary ratings (team_summaries)
   ts.mov, ts.sos, ts.srs, ts.o_rtg, ts.d_rtg, ts.n_rtg, ts.pace,
   ts.f_tr, ts.x3p_ar, ts.ts_percent, ts.e_fg_percent, ts.tov_percent,
@@ -208,7 +232,10 @@ LEFT JOIN postgresql.staging.team_totals tot
 LEFT JOIN mongodb.lsdm.team_abbrev ta
   ON TRY_CAST(ta.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER)
  AND UPPER(ta.abbreviation) = UPPER(ts.abbreviation)
-WHERE ts.season IS NOT NULL
+WHERE COALESCE(
+        TRY_CAST(ts.season AS INTEGER),
+        TRY_CAST(SUBSTR(CAST(ts.season AS VARCHAR), 1, 4) AS INTEGER)
+      ) IS NOT NULL
   AND COALESCE(ts.abbreviation, tpg.abbreviation, t100.abbreviation, ta.abbreviation) IS NOT NULL
   AND COALESCE(ts.abbreviation, tpg.abbreviation, t100.abbreviation, ta.abbreviation) <> '';
 
@@ -216,8 +243,21 @@ WHERE ts.season IS NOT NULL
 CREATE OR REPLACE VIEW memory.gav.global_game AS
 SELECT
   g.game_id,
-  TRY_CAST(g.date AS DATE)                                   AS game_date,
-  COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season,1,4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) AS season,
+  COALESCE(
+    CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+    CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+    TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+  )                                                           AS game_date,
+  COALESCE(
+    TRY_CAST(g.season AS INTEGER),
+    TRY_CAST(SUBSTR(CAST(g.season AS VARCHAR),1,4) AS INTEGER),
+    YEAR(
+      COALESCE(
+        CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+        CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE)
+      )
+    )
+  ) AS season,
   g.home.team_id          AS home_team_id,
   LOWER(g.home.team_city) AS home_team_city,
   LOWER(g.home.team_name) AS home_team_name,
@@ -227,7 +267,18 @@ SELECT
   LOWER(g.away.team_name) AS away_team_name,
   TRY_CAST(g.away.score AS INTEGER)                           AS away_score,
   LOWER(g.winner)         AS winner,
-  TRY_CAST(g.attendance AS INTEGER)                           AS attendance
+  TRY_CAST(
+    NULLIF(
+      CASE
+        WHEN REGEXP_LIKE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\s]', ''), '^[0-9]+(\.[0-9]{3})+$') THEN
+          REGEXP_REPLACE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\s]', ''), '\\.', '')
+        WHEN REGEXP_LIKE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\s]', ''), '^[0-9]+\.[0-9]+$') THEN
+          REGEXP_EXTRACT(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\s]', ''), '^([0-9]+)')
+        ELSE REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[^0-9]', '')
+      END,
+      ''
+    ) AS INTEGER
+  ) AS attendance
 FROM mongodb.lsdm.games g;
 
 -- Player dimension (from common_player_info)
