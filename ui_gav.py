@@ -130,7 +130,7 @@ def diagnose(host: str, port: int, user: str):
 
 CASES: List[QueryCase] = [
     QueryCase(
-        title="Roster + posizione/fisico (LAL, 2019-2021)",
+        title="Roster + posizione/fisico",
         sql_raw=(
             """
 SELECT
@@ -138,7 +138,16 @@ SELECT
   TRY_CAST(pt.season AS INTEGER)                              AS season,
   UPPER(pt.team)                                              AS team_abbr,
   COALESCE(cpi.position, UPPER(pt.pos), UPPER(ppg.pos))       AS position,
-  cpi.height, cpi.weight
+  CAST(ROUND(
+    COALESCE(
+      TRY_CAST(REGEXP_EXTRACT(cpi.height, '^(\\d+)', 1) AS DOUBLE) * 30.48
+      + TRY_CAST(REGEXP_EXTRACT(cpi.height, '(\\d+)$', 1) AS DOUBLE) * 2.54,
+      NULL
+    )
+  ) AS INTEGER)                                               AS height_cm,
+  CAST(ROUND(
+    COALESCE(TRY_CAST(cpi.weight AS DOUBLE) * 0.45359237, NULL)
+  ) AS INTEGER)                                               AS weight_kg
 FROM mongodb.lsdm.player_totals pt
 LEFT JOIN postgresql.staging.player_per_game ppg
   ON ppg.player_id = pt.player_id
@@ -192,6 +201,7 @@ SELECT
   TRY_CAST(ts.season AS INTEGER)                                           AS season,
   COALESCE(ts.abbreviation, ta.abbreviation)                               AS team_abbr,
   COALESCE(LOWER(ts.team), LOWER(ta.team_name), LOWER(td.nickname))        AS team_name,
+  LOWER(COALESCE(nhc.name, td.meta.head_coach))                            AS coach,
   LOWER(COALESCE(ts.arena, td.meta.arena.name))                            AS arena_name
 FROM postgresql.staging.team_summaries ts
 LEFT JOIN mongodb.lsdm.team_abbrev ta
@@ -199,6 +209,10 @@ LEFT JOIN mongodb.lsdm.team_abbrev ta
  AND UPPER(ta.abbreviation) = UPPER(ts.abbreviation)
 LEFT JOIN mongodb.lsdm.team_details td
   ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
+LEFT JOIN postgresql.staging.nba_head_coaches nhc
+  ON 2022 BETWEEN TRY_CAST(nhc.start_season_short AS INTEGER)
+              AND TRY_CAST(nhc.end_season_short   AS INTEGER)
+ AND REGEXP_LIKE(UPPER(nhc.teams), CONCAT('(^|[,\\s])', UPPER(COALESCE(ts.abbreviation, ta.abbreviation)), '([,\\s]|$)'))
 WHERE COALESCE(ts.abbreviation, ta.abbreviation) IN ('BOS','LAL')
   AND TRY_CAST(ts.season AS INTEGER) = 2022
 ORDER BY team_abbr
@@ -223,6 +237,7 @@ JOIN mongodb.lsdm.player_totals pt
   ON adv.player_id = pt.player_id AND TRY_CAST(adv.season AS INTEGER) = TRY_CAST(pt.season AS INTEGER)
 WHERE TRY_CAST(adv.season AS INTEGER) = 2016 AND UPPER(pt.team) = 'CLE'
 ORDER BY adv.per DESC
+LIMIT 10
 """
         ),
         sql_gav=(
@@ -235,18 +250,38 @@ ORDER BY per DESC NULLS LAST
         ),
     ),
     QueryCase(
-        title="Partite con maggiore affluenza (2025)",
+        title="Partite con maggiore affluenza",
         sql_raw=(
             """
 SELECT
   g.game_id,
-  TRY_CAST(g.date AS DATE) AS game_date,
-  COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season, 1, 4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) AS season,
+  COALESCE(
+    CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+    CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+    TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+  ) AS game_date,
+  COALESCE(
+    TRY_CAST(g.season AS INTEGER),
+    TRY_CAST(SUBSTR(CAST(g.season AS VARCHAR), 1, 4) AS INTEGER),
+    year(
+      COALESCE(
+        CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+        CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+        TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+      )
+    )
+  ) AS season,
   LOWER(g.home.team_city)  AS home_team_city,
   LOWER(g.home.team_name)  AS home_team_name,
   LOWER(g.away.team_city)  AS away_team_city,
   LOWER(g.away.team_name)  AS away_team_name,
-  TRY_CAST(g.attendance AS INTEGER) AS attendance
+  CASE
+    WHEN REGEXP_LIKE(CAST(g.attendance AS VARCHAR), '^\d{1,3}([.,]\d{3})+$')
+      THEN TRY_CAST(REPLACE(REPLACE(CAST(g.attendance AS VARCHAR), ',', ''), '.', '') AS INTEGER)
+    WHEN REGEXP_LIKE(CAST(g.attendance AS VARCHAR), '^\d+\.\d+$')
+      THEN TRY_CAST(REGEXP_EXTRACT(CAST(g.attendance AS VARCHAR), '^(\d+)\.', 1) AS INTEGER)
+    ELSE TRY_CAST(CAST(g.attendance AS VARCHAR) AS INTEGER)
+  END AS attendance
 FROM mongodb.lsdm.games g
 WHERE COALESCE(TRY_CAST(g.season AS INTEGER), TRY_CAST(SUBSTR(g.season, 1, 4) AS INTEGER), year(TRY_CAST(g.date AS DATE))) = 2025
   AND g.attendance IS NOT NULL
@@ -269,15 +304,26 @@ ORDER BY attendance DESC
 SELECT
   TRY_CAST(ts.season AS INTEGER) AS season,
   UPPER(ts.abbreviation) AS team_abbr,
-  ts.o_rtg, ts.d_rtg, ts.n_rtg, ts.pace
+  ts.o_rtg, ts.d_rtg, ts.n_rtg, ts.pace,
+  COALESCE(
+    tpg.pts_per_game,
+    CASE WHEN tot.pts IS NOT NULL AND tot.g IS NOT NULL AND TRY_CAST(tot.g AS DOUBLE) <> 0
+         THEN TRY_CAST(tot.pts AS DOUBLE) / TRY_CAST(tot.g AS DOUBLE)
+    END
+  ) AS points_per_game
 FROM postgresql.staging.team_summaries ts
+LEFT JOIN postgresql.staging.team_stats_per_game tpg
+  ON TRY_CAST(tpg.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER) AND UPPER(tpg.abbreviation) = UPPER(ts.abbreviation)
+LEFT JOIN postgresql.staging.team_totals tot
+  ON TRY_CAST(tot.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER) AND UPPER(tot.abbreviation) = UPPER(ts.abbreviation)
 WHERE TRY_CAST(ts.season AS INTEGER) = 2020 AND UPPER(ts.abbreviation) IN ('LAL','BOS')
 ORDER BY team_abbr
 """
         ),
         sql_gav=(
             """
-SELECT season, team_abbr, ROUND(o_rtg,1) AS o_rtg, ROUND(d_rtg,1) AS d_rtg, ROUND(n_rtg,1) AS n_rtg, ROUND(pace,1) AS pace
+SELECT season, team_abbr, ROUND(o_rtg,1) AS o_rtg, ROUND(d_rtg,1) AS d_rtg, ROUND(n_rtg,1) AS n_rtg, ROUND(pace,1) AS pace,
+       ROUND(COALESCE(points_per_game, (o_rtg * pace)/100.0), 1) AS points_per_game
 FROM memory.gav.global_team_season
 WHERE season = 2020 AND team_abbr IN ('LAL','BOS')
 ORDER BY team_abbr
@@ -348,14 +394,23 @@ def main():
     with st.expander("Parametri", expanded=True):
         if "Roster + posizione" in case.title:
             team = st.text_input("Team abbr", value="LAL").upper()
-            y1, y2 = st.slider("Intervallo stagioni", 1950, 2035, (2019, 2021))
+            y1, y2 = st.slider("Intervallo stagioni", 1950, 2025, (2019, 2021))
             dyn_raw = f"""
 SELECT
   COALESCE(LOWER(cpi.full_name), LOWER(pt.player)) AS player_name,
   TRY_CAST(pt.season AS INTEGER) AS season,
   UPPER(pt.team) AS team_abbr,
   COALESCE(cpi.position, UPPER(pt.pos), UPPER(ppg.pos)) AS position,
-  cpi.height, cpi.weight
+  CAST(ROUND(
+    COALESCE(
+      TRY_CAST(REGEXP_EXTRACT(cpi.height, '^(\\d+)', 1) AS DOUBLE) * 30.48
+      + TRY_CAST(REGEXP_EXTRACT(cpi.height, '(\\d+)$', 1) AS DOUBLE) * 2.54,
+      NULL
+    )
+  ) AS INTEGER) AS height_cm,
+  CAST(ROUND(
+    COALESCE(TRY_CAST(cpi.weight AS DOUBLE) * 0.45359237, NULL)
+  ) AS INTEGER) AS weight_kg
 FROM mongodb.lsdm.player_totals pt
 LEFT JOIN postgresql.staging.player_per_game ppg
   ON ppg.player_id = pt.player_id
@@ -379,6 +434,7 @@ SELECT
   TRY_CAST(ts.season AS INTEGER)                                           AS season,
   COALESCE(ts.abbreviation, ta.abbreviation)                               AS team_abbr,
   COALESCE(LOWER(ts.team), LOWER(ta.team_name), LOWER(td.nickname))        AS team_name,
+  LOWER(COALESCE(nhc.name, td.meta.head_coach))                            AS coach,
   LOWER(COALESCE(ts.arena, td.meta.arena.name))                            AS arena_name
 FROM postgresql.staging.team_summaries ts
 LEFT JOIN mongodb.lsdm.team_abbrev ta
@@ -386,6 +442,10 @@ LEFT JOIN mongodb.lsdm.team_abbrev ta
  AND UPPER(ta.abbreviation) = UPPER(ts.abbreviation)
 LEFT JOIN mongodb.lsdm.team_details td
   ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
+LEFT JOIN postgresql.staging.nba_head_coaches nhc
+  ON 2022 BETWEEN TRY_CAST(nhc.start_season_short AS INTEGER)
+              AND TRY_CAST(nhc.end_season_short   AS INTEGER)
+ AND REGEXP_LIKE(UPPER(nhc.teams), CONCAT('(^|[,\\s])', UPPER(COALESCE(ts.abbreviation, ta.abbreviation)), '([,\\s]|$)'))
 WHERE COALESCE(ts.abbreviation, ta.abbreviation) IN ({abbrs})
   AND TRY_CAST(ts.season AS INTEGER) = 2022
 ORDER BY team_abbr"""
@@ -395,7 +455,7 @@ FROM memory.gav.dim_team_season
 WHERE team_abbr IN ({abbrs}) AND season = 2022
 ORDER BY team_abbr"""
         elif "Triple-doubles per giocatore" in case.title:
-            start, end = st.slider("Intervallo stagioni", 1950, 2035, (2010, 2020))
+            start, end = st.slider("Intervallo stagioni", 1950, 2025, (2010, 2020))
             dyn_raw = f"""
 SELECT LOWER(player_name) AS player_name, COUNT(*) AS triple_doubles
 FROM postgresql.staging.nba_player_box_score_stats_1950_2022
@@ -414,16 +474,41 @@ GROUP BY player_name
 ORDER BY triple_doubles DESC"""
         elif "Top 10 PER" in case.title:
             team = st.text_input("Team abbr", value="CLE").upper()
-            season = st.number_input("Season", 1950, 2035, 2016, step=1)
+            season = st.slider("Season", min_value=1950, max_value=2025, value=2016, step=1)
             dyn_gav = f"""
 SELECT player_name, team_abbr, per, ts_percent, ws, vorp
 FROM memory.gav.global_player_season
-WHERE season = {season} AND team_abbr = '{team}'
-ORDER BY per DESC NULLS LAST"""
+WHERE season = {int(season)} AND team_abbr = '{team}'
+ORDER BY per DESC NULLS LAST
+LIMIT 10"""
         elif "Statistiche avanzate di squadra" in case.title:
-            season = st.number_input("Season", 1950, 2035, 2020, step=1)
+            season = st.slider("Season", min_value=1961, max_value=2025, value=2020, step=1)
             team1 = re.sub(r"[^A-Za-z]", "", st.text_input("Team A", value="LAL")).upper()
             team2 = re.sub(r"[^A-Za-z]", "", st.text_input("Team B", value="BOS")).upper()
+            dyn_raw = f"""
+SELECT
+  TRY_CAST(ts.season AS INTEGER) AS season,
+  UPPER(ts.abbreviation) AS team_abbr,
+  ROUND(ts.o_rtg, 1) AS o_rtg,
+  ROUND(ts.d_rtg, 1) AS d_rtg,
+  ROUND(ts.n_rtg, 1) AS n_rtg,
+  ROUND(ts.pace, 1)  AS pace,
+  ROUND(
+    COALESCE(
+      tpg.pts_per_game,
+      CASE WHEN tot.pts IS NOT NULL AND tot.g IS NOT NULL AND TRY_CAST(tot.g AS DOUBLE) <> 0
+           THEN TRY_CAST(tot.pts AS DOUBLE) / TRY_CAST(tot.g AS DOUBLE)
+      END,
+      (ts.o_rtg * ts.pace)/100.0
+    ), 1
+  ) AS points_per_game
+FROM postgresql.staging.team_summaries ts
+LEFT JOIN postgresql.staging.team_stats_per_game tpg
+  ON TRY_CAST(tpg.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER) AND UPPER(tpg.abbreviation) = UPPER(ts.abbreviation)
+LEFT JOIN postgresql.staging.team_totals tot
+  ON TRY_CAST(tot.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER) AND UPPER(tot.abbreviation) = UPPER(ts.abbreviation)
+WHERE TRY_CAST(ts.season AS INTEGER) = {int(season)} AND UPPER(ts.abbreviation) IN ('{team1}','{team2}')
+ORDER BY team_abbr;"""
             dyn_gav = f"""
 SELECT
   season,
@@ -438,22 +523,52 @@ WHERE season = {int(season)}
   AND team_abbr IN ('{team1}','{team2}')
 ORDER BY team_abbr;"""
         elif "Partite con maggiore affluenza" in case.title:
-            # Allow changing season; suggest seasons with attendance present
-            seasons_att: List[int] = []
-            try:
-                df_att = run_query(
-                    "SELECT DISTINCT season FROM memory.gav.global_game WHERE attendance IS NOT NULL ORDER BY season",
-                    host, int(port), user, catalog="memory", schema="gav", max_rows=10000,
-                )
-                if not df_att.empty and "season" in df_att.columns:
-                    seasons_att = [int(x) for x in df_att["season"].dropna().tolist()]
-            except Exception:
-                seasons_att = []
+            season_g = st.slider("Season", min_value=1946, max_value=2025, value=2025, step=1)
 
-            if seasons_att:
-                season_g = st.selectbox("Season", options=seasons_att, index=len(seasons_att)-1)
-            else:
-                season_g = st.number_input("Season", 1946, 2035, 2025, step=1)
+            dyn_raw = f"""
+SELECT
+  g.game_id,
+  COALESCE(
+    CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+    CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+    TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+  ) AS game_date,
+  COALESCE(
+    TRY_CAST(g.season AS INTEGER),
+    TRY_CAST(SUBSTR(CAST(g.season AS VARCHAR), 1, 4) AS INTEGER),
+    year(
+      COALESCE(
+        CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+        CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+        TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+      )
+    )
+  ) AS season,
+  LOWER(g.home.team_city)  AS home_team_city,
+  LOWER(g.home.team_name)  AS home_team_name,
+  LOWER(g.away.team_city)  AS away_team_city,
+  LOWER(g.away.team_name)  AS away_team_name,
+  CASE
+    WHEN REGEXP_LIKE(CAST(g.attendance AS VARCHAR), '^\d{1,3}([.,]\\d{3})+$')
+      THEN TRY_CAST(REPLACE(REPLACE(CAST(g.attendance AS VARCHAR), ',', ''), '.', '') AS INTEGER)
+    WHEN REGEXP_LIKE(CAST(g.attendance AS VARCHAR), '^\d+\.\d+$')
+      THEN TRY_CAST(REGEXP_EXTRACT(CAST(g.attendance AS VARCHAR), '^(\d+)\.', 1) AS INTEGER)
+    ELSE TRY_CAST(CAST(g.attendance AS VARCHAR) AS INTEGER)
+  END AS attendance
+FROM mongodb.lsdm.games g
+WHERE COALESCE(
+        TRY_CAST(g.season AS INTEGER),
+        TRY_CAST(SUBSTR(CAST(g.season AS VARCHAR), 1, 4) AS INTEGER),
+        year(
+          COALESCE(
+            CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+            CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+            TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+          )
+        )
+      ) = {int(season_g)}
+  AND g.attendance IS NOT NULL
+ORDER BY attendance DESC"""
 
             dyn_gav = f"""
 SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_city, away_team_name, attendance
@@ -478,7 +593,12 @@ ORDER BY attend DESC NULLS LAST"""
 
     st.divider()
 
-    max_rows = st.slider("Limite righe", min_value=10, max_value=1000, value=100, step=10)
+    show_limit = True
+    if "Top 10 PER" in case.title:
+        show_limit = False
+    max_rows = 100
+    if show_limit:
+        max_rows = st.slider("Limite righe", min_value=10, max_value=100, value=100, step=10)
     run = st.button("Esegui SOLO la query GAV")
     if run:
         try:

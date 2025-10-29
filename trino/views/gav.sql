@@ -158,7 +158,53 @@ SELECT
     TRY_CAST(SUBSTR(CAST(ts.season AS VARCHAR), 1, 4) AS INTEGER)
   )                                                                      AS season,
   COALESCE(ts.abbreviation, tpg.abbreviation, t100.abbreviation, ta.abbreviation) AS team_abbr,
-  COALESCE(LOWER(ts.team), LOWER(ta.team_name))                          AS team_name,
+  CASE UPPER(COALESCE(ts.abbreviation, tpg.abbreviation, t100.abbreviation, ta.abbreviation))
+    WHEN 'LAL' THEN 'los angeles lakers'
+    WHEN 'MNL' THEN 'los angeles lakers'
+    WHEN 'OKC' THEN 'oklahoma city thunder'
+    WHEN 'SEA' THEN 'oklahoma city thunder'
+    WHEN 'SAC' THEN 'sacramento kings'
+    WHEN 'KCO' THEN 'sacramento kings'
+    WHEN 'KCK' THEN 'sacramento kings'
+    WHEN 'CIN' THEN 'sacramento kings'
+    WHEN 'ROC' THEN 'sacramento kings'
+    WHEN 'WAS' THEN 'washington wizards'
+    WHEN 'WSB' THEN 'washington wizards'
+    WHEN 'BAL' THEN 'washington wizards'
+    WHEN 'WSH' THEN 'washington wizards'
+    WHEN 'MEM' THEN 'memphis grizzlies'
+    WHEN 'VAN' THEN 'memphis grizzlies'
+    WHEN 'NOP' THEN 'new orleans pelicans'
+    WHEN 'NOH' THEN 'new orleans pelicans'
+    WHEN 'NOK' THEN 'new orleans pelicans'
+    WHEN 'BRK' THEN 'brooklyn nets'
+    WHEN 'BKN' THEN 'brooklyn nets'
+    WHEN 'NJN' THEN 'brooklyn nets'
+    WHEN 'LAC' THEN 'los angeles clippers'
+    WHEN 'SDC' THEN 'los angeles clippers'
+    WHEN 'BUF' THEN 'los angeles clippers'
+    WHEN 'PHX' THEN 'phoenix suns'
+    WHEN 'PHO' THEN 'phoenix suns'
+    WHEN 'SAS' THEN 'san antonio spurs'
+    WHEN 'SAN' THEN 'san antonio spurs'
+    WHEN 'PHI' THEN 'philadelphia 76ers'
+    WHEN 'SYR' THEN 'philadelphia 76ers'
+    WHEN 'ATL' THEN 'atlanta hawks'
+    WHEN 'STL' THEN 'atlanta hawks'
+    WHEN 'MLH' THEN 'atlanta hawks'
+    WHEN 'TRI' THEN 'atlanta hawks'
+    WHEN 'DET' THEN 'detroit pistons'
+    WHEN 'FTW' THEN 'detroit pistons'
+    WHEN 'GSW' THEN 'golden state warriors'
+    WHEN 'SFW' THEN 'golden state warriors'
+    WHEN 'PHW' THEN 'golden state warriors'
+    WHEN 'UTA' THEN 'utah jazz'
+    WHEN 'NOJ' THEN 'utah jazz'
+    WHEN 'CHO' THEN 'charlotte hornets'
+    WHEN 'CHH' THEN 'charlotte hornets'
+    WHEN 'CHA' THEN 'charlotte hornets'
+    ELSE COALESCE(LOWER(ts.team), LOWER(ta.team_name))
+  END                                                                    AS team_name,
   COALESCE(
     TRY_CAST(REPLACE(CAST(ts.attend   AS VARCHAR), ',', '') AS DOUBLE),
     CASE
@@ -379,7 +425,53 @@ WITH base AS (
 SELECT
   season,
   team_abbr,
-  team_name,
+  CASE UPPER(team_abbr)
+    WHEN 'LAL' THEN 'los angeles lakers'
+    WHEN 'MNL' THEN 'los angeles lakers'
+    WHEN 'OKC' THEN 'oklahoma city thunder'
+    WHEN 'SEA' THEN 'oklahoma city thunder'
+    WHEN 'SAC' THEN 'sacramento kings'
+    WHEN 'KCO' THEN 'sacramento kings'
+    WHEN 'KCK' THEN 'sacramento kings'
+    WHEN 'CIN' THEN 'sacramento kings'
+    WHEN 'ROC' THEN 'sacramento kings'
+    WHEN 'WAS' THEN 'washington wizards'
+    WHEN 'WSB' THEN 'washington wizards'
+    WHEN 'BAL' THEN 'washington wizards'
+    WHEN 'WSH' THEN 'washington wizards'
+    WHEN 'MEM' THEN 'memphis grizzlies'
+    WHEN 'VAN' THEN 'memphis grizzlies'
+    WHEN 'NOP' THEN 'new orleans pelicans'
+    WHEN 'NOH' THEN 'new orleans pelicans'
+    WHEN 'NOK' THEN 'new orleans pelicans'
+    WHEN 'BRK' THEN 'brooklyn nets'
+    WHEN 'BKN' THEN 'brooklyn nets'
+    WHEN 'NJN' THEN 'brooklyn nets'
+    WHEN 'LAC' THEN 'los angeles clippers'
+    WHEN 'SDC' THEN 'los angeles clippers'
+    WHEN 'BUF' THEN 'los angeles clippers'
+    WHEN 'PHX' THEN 'phoenix suns'
+    WHEN 'PHO' THEN 'phoenix suns'
+    WHEN 'SAS' THEN 'san antonio spurs'
+    WHEN 'SAN' THEN 'san antonio spurs'
+    WHEN 'PHI' THEN 'philadelphia 76ers'
+    WHEN 'SYR' THEN 'philadelphia 76ers'
+    WHEN 'ATL' THEN 'atlanta hawks'
+    WHEN 'STL' THEN 'atlanta hawks'
+    WHEN 'MLH' THEN 'atlanta hawks'
+    WHEN 'TRI' THEN 'atlanta hawks'
+    WHEN 'DET' THEN 'detroit pistons'
+    WHEN 'FTW' THEN 'detroit pistons'
+    WHEN 'GSW' THEN 'golden state warriors'
+    WHEN 'SFW' THEN 'golden state warriors'
+    WHEN 'PHW' THEN 'golden state warriors'
+    WHEN 'UTA' THEN 'utah jazz'
+    WHEN 'NOJ' THEN 'utah jazz'
+    WHEN 'CHO' THEN 'charlotte hornets'
+    WHEN 'CHH' THEN 'charlotte hornets'
+    WHEN 'CHA' THEN 'charlotte hornets'
+    ELSE team_name
+  END AS team_name,
   city,
   arena_name,
   arena_capacity,
