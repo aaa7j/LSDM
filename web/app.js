@@ -9,7 +9,7 @@ function highlight(text, query) {
 
 function setLoading(el, on, text) {
   if (!el) return;
-  const msg = (typeof text === 'string' && text) ? text : 'Searching…';
+  const msg = (typeof text === 'string' && text) ? text : 'Searching...';
   if (on) {
     el.innerHTML = '<span class="loading"><span class="spinner" aria-hidden></span><span class="loading-text">' + msg + '</span></span>';
   } else {
@@ -34,3 +34,4 @@ document.addEventListener('click', (e) => {
   btn.appendChild(ripple);
   setTimeout(() => ripple.remove(), 280);
 }, true);
+

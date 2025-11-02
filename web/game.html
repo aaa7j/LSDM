@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -36,7 +36,7 @@
       async function load(){
         const { id, page, size } = getParams();
         const head = document.getElementById('head');
-        if (window.setLoading) setLoading(head, true, 'Loading…'); else head.innerHTML = 'Loading...';
+        if (window.setLoading) setLoading(head, true, 'Loading...'); else head.innerHTML = 'Loading...';
         if(!id){ head.textContent = 'Missing game id'; return; }
         try{
           const res = await fetch(`/entity/game/${encodeURIComponent(id)}?page=${page}&size=${size}`);
@@ -55,7 +55,7 @@
           if (d.season_type) bits.push(String(d.season_type));
           if (d.location) bits.push(String(d.location));
           if (d.attendance!=null && d.attendance!=='') bits.push('attendance ' + String(d.attendance));
-          head.appendChild(el('div','sub game-meta', bits.join(' � ')));
+          head.appendChild(el('div','sub game-meta', bits.join(' · ')));
           // Team box stats (split 2 columns)
           const boxes = document.createElement('div'); boxes.className='box-2col';
           function fmtPct(v){ const n = Number(v); if (!isFinite(n)) return null; return (Math.round(n*1000)/10) + '%'; }
@@ -74,8 +74,7 @@
               add('REB', String(reb) + (stats.oreb!=null||stats.dreb!=null? ` (O ${stats.oreb??'-'} / D ${stats.dreb??'-'})`:''));
               if(stats.ast!=null) add('AST', String(stats.ast));
               if(stats.stl!=null) add('STL', String(stats.stl));
-              if(stats.blk!=null) add('BLK', String(stats.blk));
-              if(stats.tov!=null) add('TOV', String(stats.tov));
+              if(stats.blk!=null) add('BLK', String(stats.blk));\n              if(stats.tov!=null) add('TOV', String(stats.tov));
               if(stats.pf!=null) add('PF', String(stats.pf));
               if(stats.pts!=null) add('PTS', String(stats.pts));
               if(stats.plus_minus!=null) add('+/-', String(stats.plus_minus));
@@ -88,7 +87,6 @@
           boxes.appendChild(renderBox(an || (d.away || d.away_id), d.away_stats || null));
           head.appendChild(boxes);
 
-          // If no stats parsed, show raw payload for quick inspection
           if (!d.home_stats && !d.away_stats) {
             const dbg = document.createElement('details');
             const sum = document.createElement('summary'); sum.textContent = 'Raw game data (debug)';
@@ -96,7 +94,6 @@
             pre.textContent = JSON.stringify(d, null, 2);
             dbg.appendChild(sum); dbg.appendChild(pre); head.appendChild(dbg);
           }
-          // Per-period line score
           if (Array.isArray(d.line) && d.line.length){
             const tbl = document.createElement('table'); tbl.className='period-table';
             const thead = document.createElement('tr'); thead.innerHTML = '<th>Period</th><th>Home</th><th>Away</th>';
@@ -104,7 +101,6 @@
             d.line.forEach(r => { const tr=document.createElement('tr'); tr.innerHTML = `<td>${r.period}</td><td>${r.home_pts}</td><td>${r.away_pts}</td>`; tbl.appendChild(tr); });
             head.appendChild(tbl);
           }
-          // (H2H removed on game page by request)
         }catch(e){ head.textContent = 'Error: '+(e.message||e); }
       }
       load();

@@ -1,0 +1,299 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Hadoop / PySpark Results</title>
+  <link rel="stylesheet" href="app.css">
+  <style>
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    .section { margin-bottom: 24px; }
+    .query-container { display:flex; gap:12px; margin-bottom: 1rem; }
+    .query-half { flex:1; }
+    .query-code{
+      background:#0b0b0b;
+      color:#dfe6ef;
+      padding:10px 12px;
+      margin:12px 0;
+      border-radius:8px;
+      border:1px solid rgba(255,255,255,.06);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      white-space:pre;
+      overflow:auto;
+    }
+    table { width:100%; border-collapse:collapse; }
+    th,td { text-align:left; padding:6px 8px; border-bottom:1px solid rgba(255,255,255,.08) }
+    th { background: transparent; }
+    .btn.secondary { background: #1d2633; color: var(--fg); border: 1px solid var(--border); }
+  </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="inner">
+        <a class="brand" href="index.html">NBA Search</a>
+        <div class="nav">
+          <a href="index.html">Search</a>
+          <a href="hadoop_results.html">Hadoop</a>
+          <a href="hadoop_pyspark_results.html" class="active">Hadoop vs PySpark</a>
+          <a href="gav_compare.html">RAW vs GAV</a>
+        </div>
+      </div>
+    </div>
+    <div class="wrap">
+      <h1>Hadoop & PySpark Results</h1>
+  <div id="summary" class="execution-time"></div>
+
+  <!-- Query 1 -->
+  <div class="section">
+    <h2>Query 1: Aggregazione punti per squadra per stagione</h2>
+    <div class="query-container">
+      <div class="query-half">
+        <h3>PySpark SQL <button class="btn secondary" id="run-pyspark-q1">Esegui</button></h3>
+        <div class="query-code">points.groupBy("season", "team_id")
+  .agg(
+    F.sum("points").alias("total_points"),
+    F.avg("points").alias("avg_points"),
+    F.count("points").alias("games")
+  )
+  .select("season", "team_id", "total_points",
+          "avg_points", "games")
+  .orderBy("season", "team_id")</div>
+      </div>
+      <div class="query-half">
+        <h3>Hadoop MapReduce <button class="btn secondary" id="run-hadoop-q1">Esegui</button></h3>
+        <p>Mapper:</p>
+        <div class="query-code"># Input: season \t team_id \t points
+# Output: season \t team_id \t points
+for line in stdin:
+  season, team_id, points = line.split("\t")
+  print(f"{season}\t{team_id}\t{points}")</div>
+        <p>Reducer:</p>
+        <div class="query-code"># Input: season \t team_id \t points
+# Output: season \t team_id \t total \t avg \t games
+for line in stdin:
+  season, team_id, points = line.split("\t")
+  if key_changes:
+    emit(season, team_id, total, avg, count)
+  total += points
+  count += 1</div>
+      </div>
+    </div>
+    <h3>Results</h3>
+    <div class="query-container">
+      <div class="query-half">
+        <h4>Hadoop</h4>
+        <table id="hadoop-q1"><thead><tr><th>season</th><th>team_id</th><th>total_points</th><th>avg_points</th><th>games</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="query-half">
+        <h4>PySpark</h4>
+        <table id="spark-q1"><thead><tr><th>season</th><th>team_id</th><th>total_points</th><th>avg_points</th><th>games</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Query 2 -->
+  <div class="section">
+    <h2>Query 2: Join con nome squadra</h2>
+    <div class="query-container">
+      <div class="query-half">
+        <h3>PySpark SQL <button class="btn secondary" id="run-pyspark-q2">Esegui</button></h3>
+        <div class="query-code">agg.join(teams, on="team_id", how="left")
+  .select(
+    "season", "team_id", "team_name",
+    "total_points", "avg_points", "games"
+  )
+  .orderBy("season", "team_id")</div>
+      </div>
+      <div class="query-half">
+        <h3>Hadoop MapReduce <button class="btn secondary" id="run-hadoop-q2">Esegui</button></h3>
+        <p>Mapper:</p>
+        <div class="query-code"># Input A: season \t team_id \t total \t avg \t games
+# Input B: team_id \t city \t name
+# Output: team_id \t [A/B] \t rest_of_fields
+for line in stdin:
+  if type_A:
+    print(f"{team_id}\tA\t{season}\t{total}\t{avg}\t{games}")
+  else: # type B
+    print(f"{team_id}\tB\t{city}\t{name}")</div>
+        <p>Reducer:</p>
+        <div class="query-code"># Input: team_id \t [A/B] \t fields...
+# Output: season \t team_id \t name \t total \t avg \t games
+for line in stdin:
+  team_id, tag = line.split("\t")[:2]
+  if tag == "B":
+    store_team_info(team_id, fields)
+  else: # tag == "A"
+    emit_with_team_name(team_id, fields)</div>
+      </div>
+    </div>
+    <h3>Results</h3>
+    <div class="query-container">
+      <div class="query-half">
+        <h4>Hadoop</h4>
+        <table id="hadoop-q2"><thead><tr><th>season</th><th>team_id</th><th>team_name</th><th>total_points</th><th>avg_points</th><th>games</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="query-half">
+        <h4>PySpark</h4>
+        <table id="spark-q2"><thead><tr><th>season</th><th>team_id</th><th>team_name</th><th>total_points</th><th>avg_points</th><th>games</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Query 3 -->
+  <div class="section">
+    <h2>Query 3: Top N partite per squadra</h2>
+    <div class="query-container">
+      <div class="query-half">
+        <h3>PySpark SQL <button class="btn secondary" id="run-pyspark-q3">Esegui</button></h3>
+        <div class="query-code">w = Window.partitionBy("team_id")
+         .orderBy(F.col("points").desc(), F.col("game_id"))
+
+points.withColumn("rn", F.row_number().over(w))
+  .where(F.col("rn") <= F.lit(topn))
+  .select("team_id", "season", "game_id", "points")
+  .orderBy("team_id", F.col("points").desc())</div>
+      </div>
+      <div class="query-half">
+        <h3>Hadoop MapReduce <button class="btn secondary" id="run-hadoop-q3">Esegui</button></h3>
+        <p>Mapper:</p>
+        <div class="query-code"># Input: season \t team_id \t points \t game_id
+# Output: team_id \t points \t season \t game_id
+for line in stdin:
+  season, team_id, points, game_id = line.split("\t")
+  print(f"{team_id}\t{points}\t{season}\t{game_id}")</div>
+        <p>Reducer:</p>
+        <div class="query-code"># Input: team_id \t points \t season \t game_id
+# Output: team_id \t season \t game_id \t points
+heap = [] # min-heap of size TOPN
+for line in stdin:
+  team_id, points, season, game_id = line.split("\t")
+  if len(heap) < TOPN:
+    heapq.heappush(heap, (points, season, game_id))
+  elif points > heap[0][0]:
+    heapq.heapreplace(heap, (points, season, game_id))
+emit_sorted_heap(heap) # in descending points order</div>
+      </div>
+    </div>
+    <h3>Results</h3>
+    <div class="query-container">
+      <div class="query-half">
+        <h4>Hadoop</h4>
+        <table id="hadoop-q3"><thead><tr><th>team_id</th><th>season</th><th>game_id</th><th>points</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="query-half">
+        <h4>PySpark</h4>
+        <table id="spark-q3"><thead><tr><th>team_id</th><th>season</th><th>game_id</th><th>points</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- PySpark Results section removed; results now appear side-by-side per query -->
+
+  </div>
+
+  <script>
+    async function loadJSON(path){
+      try{
+        const r = await fetch(path);
+        if(!r.ok) return null;
+        return await r.json();
+      }catch(e){return null}
+    }
+
+    function renderTable(selector, rows, cols){
+      const tbody = document.querySelector(selector + ' tbody');
+      tbody.innerHTML = '';
+      if(!rows || rows.length==0) { tbody.innerHTML = '<tr><td colspan="'+cols.length+'">(no rows)</td></tr>'; return }
+      rows.slice(0,10).forEach(r=>{
+        const tr = document.createElement('tr');
+        if (Array.isArray(r)){
+          for (let i=0;i<cols.length;i++){
+            const td = document.createElement('td');
+            td.textContent = (r[i]!==undefined? r[i] : '');
+            tr.appendChild(td);
+          }
+        } else {
+          cols.forEach(c=>{
+            const td = document.createElement('td');
+            td.textContent = (r[c]!==undefined? r[c] : '');
+            tr.appendChild(td);
+          });
+        }
+        tbody.appendChild(tr);
+      });
+      const sepRow = document.createElement('tr');
+      sepRow.innerHTML = '<td colspan="' + cols.length + '" style="text-align:center">...</td>';
+      tbody.appendChild(sepRow);
+    }
+
+    async function loadHadoop(){
+      const q1 = await loadJSON('data/q1.json');
+      const q2 = await loadJSON('data/q2.json');
+      const q3 = await loadJSON('data/q3.json');
+      return { q1: (q1 && q1.rows) ? q1.rows : [], q2: (q2 && q2.rows) ? q2.rows : [], q3: (q3 && q3.rows) ? q3.rows : [] };
+    }
+    async function loadSpark(){
+      const q1 = await loadJSON('data/spark_q1.json');
+      const q2 = await loadJSON('data/spark_q2.json');
+      const q3 = await loadJSON('data/spark_q3.json');
+      return { q1: (q1 && q1.rows) ? q1.rows : [], q2: (q2 && q2.rows) ? q2.rows : [], q3: (q3 && q3.rows) ? q3.rows : [] };
+    }
+
+    async function callRun(tool, query, topn){
+      try{
+        const r = await fetch('/api/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tool, query, topn }) });
+        if(!r.ok){
+          const msg = await r.text().catch(()=> '');
+          alert('Errore API ' + r.status + (msg? ('\n' + msg) : ''));
+          return null;
+        }
+        const data = await r.json();
+        if(!data.ok){
+          alert('Esecuzione fallita. Dettagli: ' + JSON.stringify(data));
+        }
+        return data;
+      }catch(e){
+        alert('Errore di rete verso API: ' + (e && e.message ? e.message : e));
+        return null;
+      }
+    }
+
+    async function refreshTables(){
+      // No auto-load on page open — called only after a run
+      const [hadoop, pyspark] = await Promise.all([ loadHadoop(), loadSpark() ]);
+      renderTable('#hadoop-q1', hadoop.q1, ['season','team_id','total_points','avg_points','games']);
+      renderTable('#hadoop-q2', hadoop.q2, ['season','team_id','team_name','total_points','avg_points','games']);
+      renderTable('#hadoop-q3', hadoop.q3, ['team_id','season','game_id','points']);
+      renderTable('#spark-q1', pyspark.q1, ['season','team_id','total_points','avg_points','games']);
+      renderTable('#spark-q2', pyspark.q2, ['season','team_id','team_name','total_points','avg_points','games']);
+      renderTable('#spark-q3', pyspark.q3, ['team_id','season','game_id','points']);
+    }
+
+    // Init summary and bind run buttons; no auto-load
+    document.getElementById('summary').textContent = 'Premi Esegui su PySpark o Hadoop per eseguire la query e vedere i risultati.';
+    function bind(id, tool, query){
+      const el = document.getElementById(id);
+      if(!el) return;
+      el.addEventListener('click', async ()=>{
+        const old = el.textContent; el.disabled = true; el.textContent='Esecuzione...';
+        await callRun(tool, query, 3);
+        await refreshTables();
+        el.disabled = false; el.textContent=old;
+      });
+    }
+    bind('run-hadoop-q1','hadoop','q1');
+    bind('run-hadoop-q2','hadoop','q2');
+    bind('run-hadoop-q3','hadoop','q3');
+    bind('run-pyspark-q1','pyspark','q1');
+    bind('run-pyspark-q2','pyspark','q2');
+    bind('run-pyspark-q3','pyspark','q3');
+
+    // Auto-load any pre-generated JSON on page open so the tables
+    // are not empty if the user already ran jobs via scripts.
+    // This will populate Hadoop tables from data/q{1,2,3}.json and
+    // PySpark tables if data/spark_q{1,2,3}.json exist.
+    refreshTables();
+  </script>
+  </body>
+  </html>
+
+

@@ -63,6 +63,7 @@ body {
   transition: .2s ease;
 }
 .nav a:hover { color: var(--fg); background: rgba(255,255,255,.04); }
+.nav a.active { color: var(--fg); background: rgba(255,255,255,.12); }
 
 /* Buttons */
 .btn {

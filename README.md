@@ -134,3 +134,30 @@ python scripts/run_search_service.py --warehouse warehouse --host 127.0.0.1 --po
 Notes:
 - The service reads Parquet snapshots from the `warehouse/` folder (create them with `scripts/run_gav.py --save warehouse`).
 - On Windows ensure a JDK is installed; you can pass `--java-home "C:\\Path\\To\\JDK"` to the runner if needed.
+
+## Hadoop vs PySpark demo (UI)
+
+- Jobs
+  - Hadoop Streaming: `powershell -File scripts/run_hadoop_streaming.ps1 -Only all`
+  - PySpark cluster:  `powershell -File scripts/run_spark_cluster.ps1 -Only all`
+  - Tip: re-run with `-Reuse` for fast clicks in the UI
+- Generate UI JSON: `powershell -File scripts/generate_web_results.ps1`
+- Serve UI: `powershell -File scripts/serve_ui.ps1 -Port 8080`
+- Open: `http://localhost:8080/hadoop_pyspark_results.html`
+
+Notes
+- Spark exports (Parquet) and Hadoop outputs (TSV) are converted to JSON under `web/data/`.
+- If using the Streamlit dashboard (`app.py`), ensure modules under `src/` are reachable or document them in `requirements.txt`.
+
+## Comparative analysis (Streamlit)
+
+Launch side-by-side analysis, speedups and resource profile:
+
+```
+streamlit run app_pyspark_vs_hadoop.py
+```
+
+- Reads `results/pyspark_vs_hadoop.jsonl` (if present)
+- Computes average `wall_ms` per tool/query and `speedup_vs_hadoop`
+- Plots bars via Altair; optional Spark resource profile in expander
+

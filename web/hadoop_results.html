@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hadoop Streaming - Risultati</title>
+    <link rel="stylesheet" href="app.css">
+    <style>
+      .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+      table { width:100%; border-collapse:collapse; margin-top:8px }
+      th,td { text-align:left; padding:6px 8px; border-bottom:1px solid rgba(255,255,255,.08) }
+      .panel { background: var(--card, #111); padding:12px; border-radius:10px; margin:12px 0; box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 1px 24px rgba(0,0,0,.3) }
+      .small { font-size: 13px; color: var(--muted, #9aa4b2) }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="inner">
+        <a class="brand" href="index.html">NBA Search</a>
+        <div class="nav">
+          <a href="index.html">Search</a>
+          <a href="hadoop_results.html" class="active">Hadoop</a>
+          <a href="hadoop_pyspark_results.html">Hadoop vs PySpark</a>
+          <a href="gav_compare.html">RAW vs GAV</a>
+        </div>
+      </div>
+    </div>
+    <div class="wrap">
+      <h1>Hadoop Streaming - Risultati</h1>
+    <p class="small">Pagina generata localmente. Esegui <code>python scripts/generate_web_results.py</code> per aggiornare i dati sotto <code>web/data/</code>.</p>
+
+    <div class="panel">
+      <h3>Panoramica file</h3>
+      <div id="summary">Caricamento...</div>
+    </div>
+
+    <div class="panel">
+      <h3>Q1 - prime righe (aggregazione)</h3>
+      <div id="q1"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Q2 - prime righe (join con team name)</h3>
+      <div id="q2"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Q3 - prime righe (top-N)</h3>
+      <div id="q3"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Azioni</h3>
+      <div class="small">Per eseguire i job direttamente dall'UI usa il server integrato PowerShell: <code>powershell -ExecutionPolicy Bypass -File scripts/serve_ui.ps1</code> e apri <code>http://localhost:8080</code>.</div>
+    </div>
+
+    </div>
+
+    <script>
+    async function loadJson(path) {
+      try {
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(res.statusText);
+        return await res.json();
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function renderSample(place, json, n=10) {
+      if (!json) { place.innerHTML = '<div class="small">Dati non disponibili (esegui lo script di generazione)</div>'; return; }
+      const rows = json.rows || [];
+      const sample = rows.slice(0,n);
+      if (!sample.length) { place.innerHTML = '<div class="small">Nessun risultato</div>'; return; }
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      const cols = sample[0].length;
+      for (let i=0;i<cols;i++) { const th = document.createElement('th'); th.textContent = 'col' + (i+1); headerRow.appendChild(th); }
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      sample.forEach(r => {
+        const tr = document.createElement('tr');
+        for (let i=0;i<cols;i++) {
+          const td = document.createElement('td'); td.textContent = r[i] === undefined ? '' : r[i]; tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      place.innerHTML = '';
+      place.appendChild(table);
+      const note = document.createElement('div'); note.className='small'; note.textContent = `Mostrati ${sample.length} righe su ${json.count || rows.length}`;
+      place.appendChild(note);
+    }
+
+    (async function() {
+      const q1 = await loadJson('data/q1.json');
+      const q2 = await loadJson('data/q2.json');
+      const q3 = await loadJson('data/q3.json');
+      const timings = null; // timings rimossi
+
+      // summary
+      const summary = document.getElementById('summary');
+      summary.innerHTML = `q1: ${ (q1 && q1.count) ? q1.count : 'n/a' } rows - q2: ${ (q2 && q2.count) ? q2.count : 'n/a' } rows - q3: ${ (q3 && q3.count) ? q3.count : 'n/a' } rows`;
+
+      renderSample(document.getElementById('q1'), q1, 12);
+      renderSample(document.getElementById('q2'), q2, 12);
+      renderSample(document.getElementById('q3'), q3, 12);
+
+      // nothing
+    })();
+    </script>
+  </body>
+  </html>

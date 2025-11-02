@@ -1,0 +1,113 @@
+services:
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: hadoop-namenode
+    ports:
+      - "9870:9870"   # HDFS NameNode UI
+      - "8020:8020"   # HDFS RPC
+    environment:
+      - CLUSTER_NAME=lsdm
+      - CORE_CONF_fs_defaultFS=hdfs://hadoop-namenode:8020
+      - HDFS_CONF_dfs_replication=1
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+      - ../../:/workspace
+    networks:
+      - hadoop
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: hadoop-datanode
+    depends_on:
+      - namenode
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://hadoop-namenode:8020
+      - HDFS_CONF_dfs_replication=1
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+      - ../../:/workspace
+    networks:
+      - hadoop
+
+  resourcemanager:
+    image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+    container_name: hadoop-resourcemanager
+    depends_on:
+      - namenode
+      - datanode
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://hadoop-namenode:8020
+      - YARN_CONF_yarn_log___aggregation___enable=true
+      - YARN_CONF_yarn_resourcemanager_hostname=hadoop-resourcemanager
+      - YARN_CONF_yarn_nodemanager_aux___services=mapreduce_shuffle
+      - YARN_CONF_mapreduce_framework_name=yarn
+    networks:
+      - hadoop
+    ports:
+      - "8088:8088"   # YARN ResourceManager UI
+    volumes:
+      - ../../:/workspace
+
+  nodemanager:
+    image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+    container_name: hadoop-nodemanager
+    depends_on:
+      - resourcemanager
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://hadoop-namenode:8020
+      - YARN_CONF_yarn_resourcemanager_hostname=hadoop-resourcemanager
+      - YARN_CONF_yarn_nodemanager_aux___services=mapreduce_shuffle
+      - YARN_CONF_mapreduce_framework_name=yarn
+    networks:
+      - hadoop
+    volumes:
+      - ../../:/workspace
+
+  historyserver:
+    image: bde2020/hadoop-historyserver:2.0.0-hadoop3.2.1-java8
+    container_name: hadoop-historyserver
+    depends_on:
+      - namenode
+      - resourcemanager
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://hadoop-namenode:8020
+      - MAPREDUCE_CONF_mapreduce_jobhistory_address=hadoop-historyserver:10020
+      - MAPREDUCE_CONF_mapreduce_jobhistory_webapp_address=hadoop-historyserver:19888
+    ports:
+      - "19888:19888"
+    networks:
+      - hadoop
+    volumes:
+      - ../../:/workspace
+
+  spark-master:
+    image: apache/spark:3.4.1
+    container_name: spark-master
+    # Start Spark master explicitly (apache/spark image requires explicit command)
+    command: "/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077"
+    ports:
+      - "7077:7077"
+      - "8090:8080"   # Spark master web UI (map to 8090 on host to avoid conflict)
+    networks:
+      - hadoop
+    volumes:
+      - ../../:/workspace
+
+  spark-worker:
+    image: apache/spark:3.4.1
+    container_name: spark-worker
+    # Start Spark worker and point it to the master
+    command: "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores 2 --memory 2g"
+    depends_on:
+      - spark-master
+    networks:
+      - hadoop
+    volumes:
+      - ../../:/workspace
+
+networks:
+  hadoop: {}
+
+volumes:
+  hadoop_namenode: {}
+  hadoop_datanode: {}
