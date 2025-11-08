@@ -23,6 +23,7 @@ def main():
     ap.add_argument("--warehouse", default="warehouse")
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--topn", type=int, default=3)
+    ap.add_argument("--append-results", action="store_true", help="Append to results file instead of overwriting")
     args = ap.parse_args()
 
     os.makedirs("outputs/spark/q1", exist_ok=True)
@@ -42,6 +43,9 @@ def main():
     run([sys.executable, "bigdata/hadoop/prep/build_teams_dim.py", "--inp", os.path.join(args.warehouse, "bigdata", "team_game_points_tsv"), "--out", os.path.join(args.warehouse, "bigdata", "teams_dim_tsv")])
 
     results_path = os.path.join("results", "pyspark_vs_hadoop.jsonl")
+    if not args.append_results and os.path.exists(results_path):
+        os.remove(results_path)
+
     for i in range(args.runs):
         # Q1 Hadoop
         t = run([

@@ -1,4 +1,4 @@
-"""
+﻿"""
 RAW vs GAV query viewer (Streamlit)
 
 Run:
@@ -663,52 +663,173 @@ def render_performance_page():
     st.title("Performance: PySpark vs Hadoop Streaming")
     st.caption("Esegue i job e confronta i tempi medi per query.")
 
-    with st.sidebar:
-        st.subheader("Esecuzione")
-        runs = st.number_input("Ripetizioni", min_value=1, max_value=5, value=1)
-        topn = st.number_input("Top N (Q3)", min_value=1, max_value=20, value=3)
-        if st.button("Esegui confronto"):
-            try:
-                cmd = [sys.executable, "scripts/run_bigdata_compare.py", "--runs", str(int(runs)), "--topn", str(int(topn))]
-                r = subprocess.run(cmd, capture_output=True, text=True)
-                if r.returncode != 0:
-                    st.error("Esecuzione fallita")
-                    st.code(r.stdout)
-                    st.code(r.stderr)
-                else:
-                    st.success("Confronto completato")
-            except Exception as e:
-                st.error(f"Errore esecuzione: {e}")
+    # Auto-run a default comparison on first load if results are missing
+    try:
+        results_path = os.path.join("results", "pyspark_vs_hadoop.jsonl")
+        if not st.session_state.get("perf_autorun_done", False):
+            need_autorun = (not os.path.exists(results_path)) or (os.path.getsize(results_path) == 0)
+            if need_autorun:
+                with st.spinner("Eseguo confronto iniziale (1 run, topN=3)..."):
+                    cmd = [sys.executable, "scripts/run_bigdata_compare.py", "--runs", "1", "--topn", "3"]
+                    r = subprocess.run(cmd, capture_output=True, text=True)
+                    if r.returncode != 0:
+                        st.warning("Autoconfronto iniziale fallito; mostrare risultati esistenti se presenti.")
+                        st.code(r.stdout)
+                        st.code(r.stderr)
+            st.session_state["perf_autorun_done"] = True
+    except Exception:
+        pass
+
+    # Sidebar controls rimossi su richiesta; esecuzione automatica già gestita sopra
 
     data = _load_perf_results()
     if not data:
-        st.info("Nessun risultato ancora. Premi 'Esegui Confronto' dalla sidebar.")
+        st.info("Nessun risultato ancora. Verifica setup e ricarica la pagina.")
         return
 
     try:
         import pandas as pd  # type: ignore
+        import numpy as np  # type: ignore
         df = pd.DataFrame(data)
         if df.empty:
             st.info("Nessun risultato valido nel file dei risultati")
             return
         df["tool"] = df["tool"].replace({"hadoop_streaming": "hadoop", "pyspark_cluster": "pyspark"})
-        summary = df.groupby(["tool", "query"], dropna=False, as_index=False)["wall_ms"].mean()
-        piv = summary.pivot(index="query", columns="tool", values="wall_ms").reset_index()
-        st.subheader("Tempi medi per query (ms)")
-        st.dataframe(piv)
         try:
             import altair as alt  # type: ignore
-            melt_cols = [c for c in piv.columns if c != "query"]
-            chart = alt.Chart(piv).transform_fold(melt_cols, as_=["tool", "wall_ms"]).mark_bar().encode(
-                x="query:N", y="wall_ms:Q", color="tool:N"
+            # Selettore di confronto
+            view = st.radio(
+                "Scegli confronto",
+                [
+                    "Tempi medi",
+                    "Speedup medio",
+                    "Speedup mediano",
+                    "Statistiche estese",
+                    "Distribuzioni (box)",
+                    "Trend per run",
+                    "Throughput",
+                ],
+                horizontal=True,
             )
-            st.altair_chart(chart, use_container_width=True)
-            if "hadoop" in melt_cols and "pyspark" in melt_cols:
-                piv["speedup_vs_hadoop"] = piv["hadoop"] / piv["pyspark"]
-                st.subheader("Speedup vs Hadoop (maggiore è meglio)")
-                sp = alt.Chart(piv).mark_bar().encode(x="query:N", y="speedup_vs_hadoop:Q")
-                st.altair_chart(sp, use_container_width=True)
-                st.write(piv[["query", "speedup_vs_hadoop"]])
+
+            # Prepara dati estesi
+            df_ext = df.copy()
+            for c in ("wall_ms", "rows", "topn"):
+                if c in df_ext.columns:
+                    df_ext[c] = pd.to_numeric(df_ext[c], errors="coerce")
+            df_ext = df_ext.reset_index(drop=True)
+            keys = [k for k in ["tool", "query", "topn"] if k in df_ext.columns]
+            if keys:
+                df_ext["run_idx"] = df_ext.groupby(keys).cumcount() + 1
+
+            summary = df_ext.groupby(["tool", "query"], dropna=False, as_index=False)["wall_ms"].mean()
+            if summary.empty:
+                st.info("Dataset filtrato vuoto. Cambia selezione o riesegui il confronto.")
+                return
+            piv = summary.pivot(index="query", columns="tool", values="wall_ms").reset_index()
+            melt_cols = [c for c in piv.columns if c != "query"]
+
+            gext = df_ext.groupby(["tool", "query"], dropna=False)
+            stats = (
+                gext["wall_ms"].agg(
+                    runs="count",
+                    mean_ms="mean",
+                    median_ms="median",
+                    p95_ms=lambda x: np.nanpercentile(x, 95),
+                    min_ms="min",
+                    max_ms="max",
+                    std_ms="std",
+                ).reset_index()
+            )
+            stats["cv"] = (stats["std_ms"] / stats["mean_ms"]).replace([np.inf, -np.inf], np.nan)
+            if "rows" in df_ext.columns and df_ext["rows"].notna().any():
+                rows_mean = gext["rows"].mean().reset_index(name="rows_mean")
+                stats = stats.merge(rows_mean, on=["tool", "query"], how="left")
+                stats["throughput_rows_per_s"] = stats.apply(
+                    lambda r: (r["rows_mean"] / (r["mean_ms"] / 1000.0)) if pd.notnull(r.get("rows_mean")) and r["mean_ms"] > 0 else np.nan,
+                    axis=1,
+                )
+            else:
+                stats["rows_mean"] = np.nan
+                stats["throughput_rows_per_s"] = np.nan
+            piv_mean = stats.pivot(index="query", columns="tool", values="mean_ms").dropna(how="any") if not stats.empty else None
+            piv_median = stats.pivot(index="query", columns="tool", values="median_ms").dropna(how="any") if not stats.empty else None
+
+            stats_display = stats.copy()
+
+            def _fmt(val, decimals):
+                if pd.isna(val):
+                    return "-"
+                return f"{float(val):.{decimals}f}"
+
+            ms_cols = ["mean_ms", "median_ms", "p95_ms", "min_ms", "max_ms", "std_ms"]
+            for col in ms_cols:
+                if col in stats_display.columns:
+                    stats_display[col] = stats_display[col].apply(lambda v: _fmt(v, 2))
+
+            if "cv" in stats_display.columns:
+                stats_display["cv"] = stats_display["cv"].apply(lambda v: _fmt(v, 3))
+            if "rows_mean" in stats_display.columns:
+                stats_display["rows_mean"] = stats_display["rows_mean"].apply(lambda v: _fmt(v, 0))
+            if "throughput_rows_per_s" in stats_display.columns:
+                stats_display["throughput_rows_per_s"] = stats_display["throughput_rows_per_s"].apply(lambda v: _fmt(v, 2))
+
+            # Render sezione scelta
+            if view == "Tempi medi":
+                st.subheader("Tempi medi per query (ms)")
+                st.dataframe(piv)
+                chart = alt.Chart(piv).transform_fold(melt_cols, as_=["tool", "wall_ms"]).mark_bar().encode(
+                    x="query:N", y="wall_ms:Q", color="tool:N"
+                )
+                st.altair_chart(chart, use_container_width=True)
+            elif view == "Speedup medio" and (piv_mean is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_mean.columns))):
+                sp_mean = (piv_mean["hadoop"] / piv_mean["pyspark"]).reset_index(name="speedup_hadoop_over_pyspark")
+                st.subheader("Speedup medio (Hadoop/PySpark)")
+                st.dataframe(sp_mean)
+                spc = alt.Chart(sp_mean).mark_bar().encode(x="query:N", y="speedup_hadoop_over_pyspark:Q")
+                st.altair_chart(spc, use_container_width=True)
+            elif view == "Speedup mediano" and (piv_median is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_median.columns))):
+                sp_med = (piv_median["hadoop"] / piv_median["pyspark"]).reset_index(name="speedup_hadoop_over_pyspark_mediana")
+                st.subheader("Speedup mediano (Hadoop/PySpark)")
+                st.dataframe(sp_med)
+                spm = alt.Chart(sp_med).mark_bar().encode(x="query:N", y="speedup_hadoop_over_pyspark_mediana:Q")
+                st.altair_chart(spm, use_container_width=True)
+            elif view == "Statistiche estese":
+                st.subheader("Statistiche estese per tool/query")
+                st.dataframe(stats_display)
+            elif view == "Distribuzioni (box)":
+                st.subheader("Distribuzioni (box) per query/tool")
+                box = (
+                    alt.Chart(df_ext)
+                    .mark_boxplot()
+                    .encode(x="tool:N", y="wall_ms:Q", column="query:N", color="tool:N")
+                )
+                st.altair_chart(box, use_container_width=True)
+            elif view == "Trend per run" and "run_idx" in df_ext.columns:
+                st.subheader("Trend run (wall-ms vs run)")
+                trend = (
+                    alt.Chart(df_ext)
+                    .mark_line(point=True)
+                    .encode(x="run_idx:Q", y="wall_ms:Q", color="tool:N", facet="query:N")
+                )
+                st.altair_chart(trend, use_container_width=True)
+            elif view == "Throughput" and ("rows" in df_ext.columns) and df_ext["rows"].notna().any():
+                st.subheader("Throughput (rows/s) vs wall-ms")
+                df_thr = df_ext[df_ext["rows"].notna()].copy()
+                df_thr["thr_rows_s"] = df_thr["rows"] / (df_thr["wall_ms"] / 1000.0)
+                scatter = (
+                    alt.Chart(df_thr)
+                    .mark_circle(size=60, opacity=0.7)
+                    .encode(x="wall_ms:Q", y="thr_rows_s:Q", color="tool:N", shape="query:N")
+                )
+                st.altair_chart(scatter, use_container_width=True)
+
+            # Speedup complessivo pesato mostrato solo nelle viste speedup
+            if view in ("Speedup medio", "Speedup mediano") and (piv_mean is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_mean.columns))):
+                total_h = float(piv_mean["hadoop"].sum())
+                total_p = float(piv_mean["pyspark"].sum())
+                if total_p > 0:
+                    st.info(f"Speedup complessivo pesato (Hadoop/PySpark): {total_h/total_p:.2f}x")
         except Exception:
             pass
     except Exception as e:

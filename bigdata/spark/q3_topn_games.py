@@ -26,7 +26,9 @@ def run_q3(warehouse_dir: str, out_dir: str, topn: int):
         .select("team_id", "season", "game_id", "points")
         .orderBy("team_id", F.col("points").desc())
     )
-    top.write.mode("overwrite").parquet(out_dir)\nelapsed = (time.perf_counter() - t0) * 1000.0\nrows_out = top.count()
+    top.write.mode("overwrite").parquet(out_dir)
+    elapsed = (time.perf_counter() - t0) * 1000.0
+    rows_out = top.count()
 
     os.makedirs("results", exist_ok=True)
     with open("results/pyspark_vs_hadoop.jsonl", "a", encoding="utf-8") as f:
@@ -36,7 +38,7 @@ def run_q3(warehouse_dir: str, out_dir: str, topn: int):
                     "tool": "pyspark",
                     "query": "q3_topn_games",
                     "wall_ms": round(elapsed, 3),
-                    "rows": rows_out,
+                    "rows": int(rows_out),
                     "topn": topn,
                 }
             )
