@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import json
 import os
 import time
@@ -6,9 +6,11 @@ from pyspark.sql import SparkSession, functions as F
 
 
 def build_spark(app_name: str = "Q2HighScoringShare"):
+    parts = max(2, (os.cpu_count() or 4) * 2)
     return (
         SparkSession.builder.appName(app_name)
         .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.shuffle.partitions", str(parts))
         .getOrCreate()
     )
 
@@ -36,7 +38,7 @@ def run_q2(warehouse_dir: str, out_dir: str, threshold: int = 120):
         .select("season", "team_id", "team_name", "high_games", "total_games", "pct_high")
         .orderBy("season", "team_id")
     )
-    joined.write.mode("overwrite").parquet(out_dir)
+    joined.write.mode("overwrite").partitionBy("season").parquet(out_dir)
     elapsed = (time.perf_counter() - t0) * 1000.0
     rows_out = joined.count()
 
@@ -46,7 +48,7 @@ def run_q2(warehouse_dir: str, out_dir: str, threshold: int = 120):
             json.dumps(
                 {
                     "tool": "pyspark",
-                    "query": "q2_high_scoring_share",
+                    "query": "q2_join_teamname",
                     "wall_ms": round(elapsed, 3),
                     "rows": int(rows_out),
                 }

@@ -1,0 +1,56 @@
+erDiagram
+  GLOBAL_PLAYER_SEASON {
+    string  player_id
+    int     season
+    string  team_abbr
+    string  player_name
+    string  position
+    int     g
+    int     gs
+    float   pts
+    float   ast
+    float   trb
+    float   pts_per_game
+    float   ast_per_game
+    float   trb_per_game
+    float   per
+    float   ts_percent
+    float   ws
+    float   bpm
+    float   vorp
+    string  src_position
+    string  src_height
+    string  src_weight
+    PK      (player_id, season)
+  }
+
+  GLOBAL_TEAM_SEASON {
+    int     season
+    string  team_abbr
+    string  team_name
+    string  city
+    string  arena_name
+    int     arena_capacity
+    string  coach
+    string  league
+    int     attend
+    int     attend_g
+    float   mov
+    float   sos
+    float   srs
+    float   o_rtg
+    float   d_rtg
+    float   n_rtg
+    float   pace
+    float   ts_percent
+    float   e_fg_percent
+    float   tov_percent
+    float   orb_percent
+    float   ft_fga
+    string  src_arena
+    string  src_coach
+    PK      (season, team_abbr)
+  }
+
+  %% logical join exposed to consumers
+  GLOBAL_PLAYER_SEASON }o--|| GLOBAL_TEAM_SEASON : "season, team_abbr"

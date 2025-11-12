@@ -1,0 +1,95 @@
+erDiagram
+  PLAYER {
+    string  player_id PK
+    string  full_name
+    string  first_name
+    string  last_name
+    date    birthdate
+    string  country
+    string  height
+    string  weight
+    string  draft_year
+    string  draft_round
+    string  draft_number
+  }
+
+  TEAM {
+    string  team_abbr PK
+    string  team_name
+    string  city
+    string  arena_name
+    int     arena_capacity
+    string  league
+  }
+
+  TEAM_SEASON {
+    int     season
+    string  team_abbr FK
+    string  coach
+    PK      (season, team_abbr)
+  }
+
+  GAME {
+    string  game_id PK
+    date    game_date
+    int     season
+    string  home_team_abbr FK
+    int     home_score
+    string  away_team_abbr FK
+    int     away_score
+    string  winner
+    int     attendance
+  }
+
+  PLAYER_GAME_BOX {
+    string  game_id FK
+    string  player_id FK
+    string  team_abbr FK
+    int     minutes
+    int     fgm
+    float   fga
+    float   fg_pct
+    float   fg3m
+    float   fg3a
+    float   fg3_pct
+    int     ftm
+    float   fta
+    float   ft_pct
+    float   oreb
+    float   dreb
+    float   reb
+    float   ast
+    float   stl
+    float   blk
+    float   tov
+    float   pf
+    int     pts
+    float   plus_minus
+    PK      (game_id, player_id)
+  }
+
+  PLAYER_SEASON {
+    string  player_id FK
+    int     season
+    string  team_abbr FK
+    int     g
+    int     gs
+    float   pts_per_game
+    float   ast_per_game
+    float   trb_per_game
+    float   per
+    float   ts_percent
+    float   ws
+    float   bpm
+    float   vorp
+    PK      (player_id, season)
+  }
+
+  %% relationships
+  TEAM ||--o{ TEAM_SEASON : "team_abbr"
+  TEAM ||--o{ GAME : "home_team_abbr/away_team_abbr"
+  GAME ||--o{ PLAYER_GAME_BOX : "game_id"
+  PLAYER ||--o{ PLAYER_GAME_BOX : "player_id"
+  TEAM ||--o{ PLAYER_GAME_BOX : "team_abbr"
+  PLAYER ||--o{ PLAYER_SEASON : "player_id"
+  TEAM ||--o{ PLAYER_SEASON : "team_abbr"

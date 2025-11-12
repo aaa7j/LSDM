@@ -1,5 +1,0 @@
-2025-10-29 18:09:52,923 INFO client.RMProxy: Connecting to ResourceManager at hadoop-resourcemanager/172.19.0.4:8032
-File /tmp/logs/root/logs-tfile/application_1761759056389_0002 does not exist.
-
-Can not find any log file matching the pattern: [ALL] for the application: application_1761759056389_0002
-Can not find the logs for the application: application_1761759056389_0002 with the appOwner: root

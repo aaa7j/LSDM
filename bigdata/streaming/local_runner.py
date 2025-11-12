@@ -18,6 +18,11 @@ def cat_inputs(inp_dir: str):
 
 
 def run_one_phase(mapper: str, reducer: str, inp: str, out: str, env_extra=None):
+    """
+    Esegue mapper e reducer in locale evitando deadlock dei pipe:
+    - usa subprocess.run(..., input=...) per leggere/scrivere atomico
+    - ordina l'output del mapper prima di passarlo al reducer
+    """
     os.makedirs(os.path.dirname(out), exist_ok=True)
     tmp = tempfile.mkdtemp(prefix="mr_local_")
     map_out = os.path.join(tmp, "map_out.tsv")
@@ -26,21 +31,36 @@ def run_one_phase(mapper: str, reducer: str, inp: str, out: str, env_extra=None)
     if env_extra:
         env.update(env_extra)
     try:
-        with subprocess.Popen([sys.executable, mapper], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True) as pmap:
-            for line in cat_inputs(inp):
-                pmap.stdin.write(line)
-            pmap.stdin.close()
-            mapped = pmap.stdout.read()
+        # 1) Mapper: alimenta tutto l'input in un colpo (evita blocchi dei pipe)
+        input_text = "".join(cat_inputs(inp))
+        res_map = subprocess.run(
+            [sys.executable, mapper],
+            input=input_text,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        if res_map.returncode != 0:
+            raise RuntimeError(f"Mapper failed ({mapper}): {res_map.stderr[:500]}")
         with open(map_out, "w", encoding="utf-8") as f:
-            f.write(mapped)
+            f.write(res_map.stdout)
+
+        # 2) Ordina e passa al reducer
         with open(map_out, "r", encoding="utf-8") as f:
             sorted_lines = sorted([ln for ln in f if ln.strip()])
-        with subprocess.Popen([sys.executable, reducer], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True) as pred:
-            pred.stdin.write("".join(sorted_lines))
-            pred.stdin.close()
-            reduced = pred.stdout.read()
+        res_red = subprocess.run(
+            [sys.executable, reducer],
+            input="".join(sorted_lines),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        if res_red.returncode != 0:
+            raise RuntimeError(f"Reducer failed ({reducer}): {res_red.stderr[:500]}")
         with open(red_out, "w", encoding="utf-8") as f:
-            f.write(reduced)
+            f.write(res_red.stdout)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -108,11 +128,26 @@ def main():
             pass
         run_one_phase(args.mapper, args.reducer, args.inp, args.out, env_extra=env)
     elapsed = (time.perf_counter() - t0) * 1000.0
+    # Count rows from output file if available
+    try:
+        rows = sum(1 for _ in open(args.out, "r", encoding="utf-8", errors="ignore"))
+    except Exception:
+        rows = None
+    rec = {
+        "tool": "hadoop_streaming",
+        "query": args.label,
+        "wall_ms": round(elapsed, 3),
+    }
+    if rows is not None:
+        rec["rows"] = rows
+    try:
+        rec["topn"] = int(args.topn)
+    except Exception:
+        pass
     os.makedirs("results", exist_ok=True)
     with open("results/pyspark_vs_hadoop.jsonl", "a", encoding="utf-8") as f:
-        f.write(
-            "{" + f"\"tool\": \"hadoop_streaming\", \"query\": \"{args.label}\", \"wall_ms\": {elapsed:.3f}" + "}\n"
-        )
+        import json as _json
+        f.write(_json.dumps(rec) + "\n")
 
 
 if __name__ == "__main__":

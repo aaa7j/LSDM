@@ -101,7 +101,7 @@ def apply_gav_views(host: str, port: int, user: str) -> str:
             except Exception:
                 pass
             executed += 1
-    return f"Eseguite {executed} istruzioni da {path}"
+    return f"Executed {executed} statements from {path}"
 
 def diagnose(host: str, port: int, user: str):
     report = {}
@@ -550,7 +550,7 @@ def hs_render_results(only: str | None = None, limit: int = 100, prefer_names: b
                 elif h_rows:
                     st.write(_normalize(h_rows[: min(20, limit) ], headers))
                 else:
-                    st.info("(vuoto)")
+                    st.info("(empty)")
             with c2:
                 st.text("PySpark")
                 if s_rows and pd is not None:
@@ -574,24 +574,24 @@ def hs_render_results(only: str | None = None, limit: int = 100, prefer_names: b
                 elif s_rows:
                     st.write(_normalize(s_rows[: min(20, limit) ], headers))
                 else:
-                    st.info("(vuoto)")
+                    st.info("(empty)")
 
 
 def render_hadoop_spark_page():
     """Standalone page: run Hadoop/Spark and display results side-by-side."""
-    st.header("Hadoop vs PySpark: Esegui e confronta")
-    st.caption("Esegue gli script PowerShell e visualizza i JSON in web/data/.")
+    st.header("Hadoop vs PySpark: Run and compare")
+    st.caption("Runs PowerShell scripts and previews JSON under web/data/.")
 
     # Query selector
     labels = {
-        "Q1 — Aggregazione punti (stagione, squadra)": "q1",
-        "Q2 — Quota partite ad alto punteggio (>=120)": "q2",
-        "Q3 — Top N partite per squadra": "q3",
+        "Q1 — Points aggregation (season, team)": "q1",
+        "Q2 — Share of high-scoring games (>=120)": "q2",
+        "Q3 — Top N games per team": "q3",
     }
     label = st.selectbox("Query", list(labels.keys()), index=0)
     q = labels[label]
-    force = st.checkbox("Forza ricalcolo (ignora reuse)", value=False)
-    limit = st.slider("Righe da mostrare", min_value=10, max_value=200, value=100, step=10)
+    force = st.checkbox("Force recompute (ignore reuse)", value=False)
+    limit = st.slider("Rows to show", min_value=10, max_value=200, value=100, step=10)
     prefer_names = True  # always show team names (City + Name when possible)
     topn = 3
     if q == "q3":
@@ -599,44 +599,44 @@ def render_hadoop_spark_page():
 
     colA, colB, colC, colD = st.columns(4)
     with colA:
-        if st.button("Esegui Hadoop"):
+        if st.button("Run Hadoop"):
             ok, out, err = hs_run_hadoop(q, topn=int(topn), reuse=(not force))
             if ok:
                 st.success("Hadoop OK")
             else:
-                st.error("Hadoop fallito")
+                st.error("Hadoop failed")
                 st.code(err or out)
     with colB:
-        if st.button("Esegui Spark"):
+        if st.button("Run Spark"):
             ok, out, err = hs_run_spark(q, topn=int(topn), reuse=(not force))
             if ok:
                 st.success("Spark OK")
             else:
-                st.error("Spark fallito")
+                st.error("Spark failed")
                 st.code(err or out)
     with colC:
-        if st.button("Esegui entrambi"):
+        if st.button("Run both"):
             ok1, out1, err1 = hs_run_hadoop(q, topn=int(topn), reuse=(not force))
             ok2, out2, err2 = hs_run_spark(q, topn=int(topn), reuse=(not force))
             if ok1 and ok2:
                 st.success("Hadoop + Spark OK")
             else:
                 if not ok1:
-                    st.error("Hadoop fallito")
+                    st.error("Hadoop failed")
                     st.code(err1 or out1)
                 if not ok2:
-                    st.error("Spark fallito")
+                    st.error("Spark failed")
                     st.code(err2 or out2)
     with colD:
-        if st.button("Rigenera JSON"):
+        if st.button("Regenerate JSON"):
             code, out, err = _ps_run(["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/generate_web_results.ps1"])
             if code == 0:
-                st.success("JSON aggiornati in web/data/")
+                st.success("JSON updated in web/data/")
             else:
-                st.error("Rigenerazione fallita")
+                st.error("Regeneration failed")
                 st.code(err or out)
 
-    st.subheader("Risultati")
+    st.subheader("Results")
     hs_render_results(only=q, limit=int(limit), prefer_names=True)
 
 
@@ -661,30 +661,16 @@ def _load_perf_results(path: str = "results/pyspark_vs_hadoop.jsonl"):
 
 def render_performance_page():
     st.title("Performance: PySpark vs Hadoop Streaming")
-    st.caption("Esegue i job e confronta i tempi medi per query.")
+    st.caption("Runs jobs and compares per-query timings.")
 
-    # Auto-run a default comparison on first load if results are missing
-    try:
-        results_path = os.path.join("results", "pyspark_vs_hadoop.jsonl")
-        if not st.session_state.get("perf_autorun_done", False):
-            need_autorun = (not os.path.exists(results_path)) or (os.path.getsize(results_path) == 0)
-            if need_autorun:
-                with st.spinner("Eseguo confronto iniziale (1 run, topN=3)..."):
-                    cmd = [sys.executable, "scripts/run_bigdata_compare.py", "--runs", "1", "--topn", "3"]
-                    r = subprocess.run(cmd, capture_output=True, text=True)
-                    if r.returncode != 0:
-                        st.warning("Autoconfronto iniziale fallito; mostrare risultati esistenti se presenti.")
-                        st.code(r.stdout)
-                        st.code(r.stderr)
-            st.session_state["perf_autorun_done"] = True
-    except Exception:
-        pass
+    # Nota: nessun autorun dei benchmark. La pagina mostra solo risultati già presenti
+    # sotto results/pyspark_vs_hadoop.jsonl per evitare attese in sede d'esame.
 
     # Sidebar controls rimossi su richiesta; esecuzione automatica già gestita sopra
 
     data = _load_perf_results()
     if not data:
-        st.info("Nessun risultato ancora. Verifica setup e ricarica la pagina.")
+        st.info("No results yet. Check setup and reload the page.")
         return
 
     try:
@@ -694,19 +680,37 @@ def render_performance_page():
         if df.empty:
             st.info("Nessun risultato valido nel file dei risultati")
             return
-        df["tool"] = df["tool"].replace({"hadoop_streaming": "hadoop", "pyspark_cluster": "pyspark"})
+        def _norm_tool(x):
+            
+            try:
+                t=str(x).strip().lower()
+            except Exception:
+                return x
+            if "spark" in t: return "pyspark"
+            if "hadoop" in t: return "hadoop"
+            return t or x
+        
+        df["tool"] = df["tool"].apply(_norm_tool)
         try:
             import altair as alt  # type: ignore
-            # Selettore di confronto
+            
+            def _hr():
+                st.markdown("<hr style='margin:32px 0; border:0; height:1px; background:#e5e7eb;' />", unsafe_allow_html=True)
+
+            def _center_chart(chart):
+                left, center, right = st.columns([1, 2, 1])
+                with center:
+                    st.altair_chart(chart, use_container_width=True)
+            # View selector
             view = st.radio(
-                "Scegli confronto",
+                "Choose view",
                 [
-                    "Tempi medi",
-                    "Speedup medio",
-                    "Speedup mediano",
-                    "Statistiche estese",
-                    "Distribuzioni (box)",
-                    "Trend per run",
+                    "Average times",
+                    "Average speedup",
+                    "Median speedup",
+                    "Extended statistics",
+                    "Distributions (box)",
+                    "Run trend",
                     "Throughput",
                 ],
                 horizontal=True,
@@ -718,18 +722,29 @@ def render_performance_page():
                 if c in df_ext.columns:
                     df_ext[c] = pd.to_numeric(df_ext[c], errors="coerce")
             df_ext = df_ext.reset_index(drop=True)
-            keys = [k for k in ["tool", "query", "topn"] if k in df_ext.columns]
+            # run_idx basato solo su (tool, query) per non perdere PySpark quando 'topn' manca
+            keys = [k for k in ["tool", "query"] if k in df_ext.columns]
             if keys:
                 df_ext["run_idx"] = df_ext.groupby(keys).cumcount() + 1
 
-            summary = df_ext.groupby(["tool", "query"], dropna=False, as_index=False)["wall_ms"].mean()
+            # Niente filtri: mostra tutte le esecuzioni
+            df_f = df_ext.copy()
+
+            summary = df_f.groupby(["tool", "query"], dropna=False, as_index=False)["wall_ms"].mean()
             if summary.empty:
-                st.info("Dataset filtrato vuoto. Cambia selezione o riesegui il confronto.")
+                st.info("No data to show.")
                 return
             piv = summary.pivot(index="query", columns="tool", values="wall_ms").reset_index()
             melt_cols = [c for c in piv.columns if c != "query"]
+            # Tabella con 1 decimale per i tempi medi
+            piv_display = piv.copy()
+            for c in melt_cols:
+                try:
+                    piv_display[c] = piv_display[c].astype(float).round(1)
+                except Exception:
+                    pass
 
-            gext = df_ext.groupby(["tool", "query"], dropna=False)
+            gext = df_f.groupby(["tool", "query"], dropna=False)
             stats = (
                 gext["wall_ms"].agg(
                     runs="count",
@@ -742,7 +757,7 @@ def render_performance_page():
                 ).reset_index()
             )
             stats["cv"] = (stats["std_ms"] / stats["mean_ms"]).replace([np.inf, -np.inf], np.nan)
-            if "rows" in df_ext.columns and df_ext["rows"].notna().any():
+            if "rows" in df_f.columns and df_f["rows"].notna().any():
                 rows_mean = gext["rows"].mean().reset_index(name="rows_mean")
                 stats = stats.merge(rows_mean, on=["tool", "query"], how="left")
                 stats["throughput_rows_per_s"] = stats.apply(
@@ -754,6 +769,8 @@ def render_performance_page():
                 stats["throughput_rows_per_s"] = np.nan
             piv_mean = stats.pivot(index="query", columns="tool", values="mean_ms").dropna(how="any") if not stats.empty else None
             piv_median = stats.pivot(index="query", columns="tool", values="median_ms").dropna(how="any") if not stats.empty else None
+
+            # KPI rimossi su richiesta (Runs totali, Query, Speedup medio)
 
             stats_display = stats.copy()
 
@@ -775,68 +792,234 @@ def render_performance_page():
                 stats_display["throughput_rows_per_s"] = stats_display["throughput_rows_per_s"].apply(lambda v: _fmt(v, 2))
 
             # Render sezione scelta
-            if view == "Tempi medi":
-                st.subheader("Tempi medi per query (ms)")
-                st.dataframe(piv)
-                chart = alt.Chart(piv).transform_fold(melt_cols, as_=["tool", "wall_ms"]).mark_bar().encode(
-                    x="query:N", y="wall_ms:Q", color="tool:N"
-                )
+            if view == "Average times":
+                st.subheader("Average time per query (ms)")
+                st.caption("Table and bars of average time (ms) by query and tool.")
+                st.dataframe(piv_display, use_container_width=True)
+                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+                # Barre affiancate (non impilate) per tool: usa xOffset se disponibile
+                try:
+                    chart = (
+                        alt.Chart(piv_display)
+                        .transform_fold(melt_cols, as_=["tool", "wall_ms"])
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("query:N", axis=alt.Axis(labelAngle=0)),
+                            xOffset="tool:N",
+                            y=alt.Y("wall_ms:Q", title="Time (ms)"),
+                            color=alt.Color("tool:N", sort=["hadoop", "pyspark"]),
+                            tooltip=[
+                                alt.Tooltip("query:N", title="Query"),
+                                alt.Tooltip("tool:N", title="Tool"),
+                                alt.Tooltip("wall_ms:Q", title="Time (ms)", format=".1f"),
+                            ],
+                        )
+                        .properties(title="Bars: average time (ms) by query and tool")
+                    )
+                except Exception:
+                    # Fallback: piccole multiple (una colonna per tool)
+                    chart = (
+                        alt.Chart(piv_display)
+                        .transform_fold(melt_cols, as_=["tool", "wall_ms"])
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("tool:N", title="Tool", sort=["hadoop", "pyspark"]),
+                            y=alt.Y("wall_ms:Q", title="Average time (ms)"),
+                            column=alt.Column("query:N", title="Query", header=alt.Header(labelOrient="bottom")),
+                            color=alt.Color("tool:N", sort=["hadoop", "pyspark"]),
+                            tooltip=[
+                                alt.Tooltip("query:N", title="Query"),
+                                alt.Tooltip("tool:N", title="Tool"),
+                                alt.Tooltip("wall_ms:Q", title="Average time (ms)", format=".1f"),
+                            ],
+                        )
+                        .properties(title="Bars: average time (ms) by query and tool")
+                    )
                 st.altair_chart(chart, use_container_width=True)
-            elif view == "Speedup medio" and (piv_mean is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_mean.columns))):
+            elif view == "Average speedup" and (piv_mean is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_mean.columns))):
                 sp_mean = (piv_mean["hadoop"] / piv_mean["pyspark"]).reset_index(name="speedup_hadoop_over_pyspark")
-                st.subheader("Speedup medio (Hadoop/PySpark)")
-                st.dataframe(sp_mean)
-                spc = alt.Chart(sp_mean).mark_bar().encode(x="query:N", y="speedup_hadoop_over_pyspark:Q")
+                st.subheader("Average speedup (Hadoop/PySpark)")
+                sp_mean_display = sp_mean.copy();
+                
+                
+                try:
+                    sp_mean_display["speedup_hadoop_over_pyspark"] = sp_mean_display["speedup_hadoop_over_pyspark"].astype(float).round(3)
+                except Exception:
+                    pass
+                st.dataframe(sp_mean_display)
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                spc = (
+                    alt.Chart(sp_mean_display)
+                    .mark_bar(size=22)
+                    .encode(
+                        x="query:N",
+                        y=alt.Y("speedup_hadoop_over_pyspark:Q", title="Speedup (x)"),
+                        tooltip=[
+                            alt.Tooltip("query:N", title="Query"),
+                            alt.Tooltip("speedup_hadoop_over_pyspark:Q", title="Speedup (x)", format=".3f"),
+                        ],
+                    )
+                    .properties(width=560, title="Bars: average speedup (Hadoop/PySpark) by query")
+                )
                 st.altair_chart(spc, use_container_width=True)
-            elif view == "Speedup mediano" and (piv_median is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_median.columns))):
+            elif view == "Median speedup" and (piv_median is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_median.columns))):
                 sp_med = (piv_median["hadoop"] / piv_median["pyspark"]).reset_index(name="speedup_hadoop_over_pyspark_mediana")
-                st.subheader("Speedup mediano (Hadoop/PySpark)")
-                st.dataframe(sp_med)
-                spm = alt.Chart(sp_med).mark_bar().encode(x="query:N", y="speedup_hadoop_over_pyspark_mediana:Q")
+                st.subheader("Median speedup (Hadoop/PySpark)")
+                sp_med_display = sp_med.copy();
+                try:
+                    sp_med_display["speedup_hadoop_over_pyspark_mediana"] = sp_med_display["speedup_hadoop_over_pyspark_mediana"].astype(float).round(3)
+                except Exception:
+                    pass
+                st.dataframe(sp_med_display)
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                spm = (
+                    alt.Chart(sp_med_display)
+                    .mark_bar(size=22)
+                    .encode(
+                        x="query:N",
+                        y=alt.Y("speedup_hadoop_over_pyspark_mediana:Q", title="Speedup (x)"),
+                        tooltip=[
+                            alt.Tooltip("query:N", title="Query"),
+                            alt.Tooltip("speedup_hadoop_over_pyspark_mediana:Q", title="Speedup (x)", format=".3f"),
+                        ],
+                    )
+                    .properties(width=560, title="Bars: median speedup (Hadoop/PySpark) by query")
+                )
                 st.altair_chart(spm, use_container_width=True)
-            elif view == "Statistiche estese":
-                st.subheader("Statistiche estese per tool/query")
-                st.dataframe(stats_display)
-            elif view == "Distribuzioni (box)":
-                st.subheader("Distribuzioni (box) per query/tool")
-                box = (
-                    alt.Chart(df_ext)
-                    .mark_boxplot()
-                    .encode(x="tool:N", y="wall_ms:Q", column="query:N", color="tool:N")
-                )
-                st.altair_chart(box, use_container_width=True)
-            elif view == "Trend per run" and "run_idx" in df_ext.columns:
-                st.subheader("Trend run (wall-ms vs run)")
-                trend = (
-                    alt.Chart(df_ext)
-                    .mark_line(point=True)
-                    .encode(x="run_idx:Q", y="wall_ms:Q", color="tool:N", facet="query:N")
-                )
-                st.altair_chart(trend, use_container_width=True)
-            elif view == "Throughput" and ("rows" in df_ext.columns) and df_ext["rows"].notna().any():
-                st.subheader("Throughput (rows/s) vs wall-ms")
-                df_thr = df_ext[df_ext["rows"].notna()].copy()
+            elif view == "Extended statistics":
+                st.subheader("Extended statistics by tool/query")
+                stats_unit = stats_display.rename(columns={k: f"{k} (ms)" for k in ["mean_ms","median_ms","p95_ms","min_ms","max_ms","std_ms"] if k in stats_display.columns}); st.dataframe(stats_unit)
+            elif view == "Distributions (box)":
+                st.subheader("Distributions (box) by query/tool")
+                st.caption("Boxplot for each query: median, quartiles and time (ms) outliers per tool.")
+                st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games"]
+                present = [q for q in order if "query" in df_ext.columns and q in df_ext["query"].unique().tolist()]
+                others = [q for q in (df_ext["query"].unique().tolist() if "query" in df_ext.columns else []) if q not in present]
+                seq = present + others
+                for i, q in enumerate(seq):
+                    sub = df_ext[df_ext["query"] == q]
+                    # Boxplot + punti grezzi sovrapposti per rendere leggibili anche poche run
+                    base_enc_x = alt.X(
+                        "tool:N",
+                        sort=["hadoop", "pyspark"],
+                        axis=alt.Axis(grid=False, title="Tool", labelAngle=0),
+                    )
+                    box_layer = (
+                        alt.Chart(sub)
+                        .mark_boxplot(extent="min-max")
+                        .encode(
+                            x=base_enc_x,
+                            y=alt.Y("wall_ms:Q", title="Time (ms)"),
+                            color="tool:N",
+                            tooltip=[
+                                alt.Tooltip("min(wall_ms):Q", title="min", format=".1f"),
+                                alt.Tooltip("q1(wall_ms):Q", title="Q1", format=".1f"),
+                                alt.Tooltip("median(wall_ms):Q", title="Median", format=".1f"),
+                                alt.Tooltip("q3(wall_ms):Q", title="Q3", format=".1f"),
+                                alt.Tooltip("max(wall_ms):Q", title="max", format=".1f"),
+                            ],
+                        )
+                    )
+                    pts_layer = (
+                        alt.Chart(sub)
+                        .mark_circle(size=64, opacity=0.45)
+                        .encode(
+                            x=base_enc_x,
+                            y=alt.Y("wall_ms:Q", title="Time (ms)"),
+                            color="tool:N",
+                            tooltip=[
+                                alt.Tooltip("tool:N", title="Tool"),
+                                alt.Tooltip("wall_ms:Q", title="Time (ms)", format=".1f"),
+                            ],
+                        )
+                    )
+                    chart = (
+                        (box_layer + pts_layer)
+                        .properties(height=300, title=f"Distribution {q}: time (ms) by tool")
+                        .configure_axis(grid=True, gridColor="#e5e7eb", gridOpacity=0.35)
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+                    if i < len(seq) - 1:
+                        _hr()
+            elif view == "Run trend" and "run_idx" in df_ext.columns:
+                st.subheader("Run trend (ms vs run)")
+                st.caption("Evolution of time (ms) per run, split by query and tool.")
+                st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games"]
+                present = [q for q in order if "query" in df_f.columns and q in df_f["query"].unique().tolist()]
+                others = [q for q in (df_f["query"].unique().tolist() if "query" in df_f.columns else []) if q not in present]
+                seq = present + others
+                for i, q in enumerate(seq):
+                    sub = df_f[df_f["query"] == q]
+                    max_run = int(sub["run_idx"].max()) if not sub.empty and "run_idx" in sub.columns else 0
+                    x_enc = alt.X(
+                        "run_idx:Q",
+                        title="Run #",
+                        axis=alt.Axis(values=list(range(1, max_run + 1)) if max_run > 0 else None, format="d"),
+                    )
+                    trend = (
+                        alt.Chart(sub)
+                        .mark_line(point=True)
+                        .encode(
+                            x=x_enc,
+                            y=alt.Y("wall_ms:Q", title="Time (ms)"),
+                            color="tool:N",
+                            tooltip=[
+                                alt.Tooltip("tool:N", title="Tool"),
+                                alt.Tooltip("run_idx:Q", title="Run #"),
+                                alt.Tooltip("wall_ms:Q", title="Time (ms)", format=".1f"),
+                            ],
+                        )
+                        .properties(height=300, title=f"Trend {q}: time (ms) by run and tool")
+                        .configure_axis(grid=True, gridColor="#e5e7eb", gridOpacity=0.35)
+                    )
+                    st.altair_chart(trend, use_container_width=True)
+                    if i < len(seq) - 1:
+                        _hr()
+            elif view == "Throughput" and ("rows" in df_f.columns) and df_f["rows"].notna().any():
+                st.subheader("Throughput (rows/s) vs time (ms)")
+                df_thr = df_f[df_f["rows"].notna()].copy()
                 df_thr["thr_rows_s"] = df_thr["rows"] / (df_thr["wall_ms"] / 1000.0)
-                scatter = (
-                    alt.Chart(df_thr)
-                    .mark_circle(size=60, opacity=0.7)
-                    .encode(x="wall_ms:Q", y="thr_rows_s:Q", color="tool:N", shape="query:N")
-                )
-                st.altair_chart(scatter, use_container_width=True)
+                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games"]
+                present = [q for q in order if "query" in df_thr.columns and q in df_thr["query"].unique().tolist()]
+                others = [q for q in (df_thr["query"].unique().tolist() if "query" in df_thr.columns else []) if q not in present]
+                seq = present + others
+                for i, q in enumerate(seq):
+                    sub = df_thr[df_thr["query"] == q]
+                    scatter = (
+                        alt.Chart(sub)
+                        .mark_circle(size=70, opacity=0.75)
+                        .encode(
+                            x=alt.X("wall_ms:Q", title="Time (ms)", scale=alt.Scale(nice=True)),
+                            y=alt.Y("thr_rows_s:Q", title="rows/s", scale=alt.Scale(nice=True)),
+                            color="tool:N",
+                            tooltip=[
+                                alt.Tooltip("tool:N", title="Tool"),
+                                alt.Tooltip("wall_ms:Q", title="Time (ms)", format=".1f"),
+                                alt.Tooltip("thr_rows_s:Q", title="rows/s", format=".2f"),
+                            ],
+                        )
+                        .properties(height=300, title=f"Throughput {q}: rows/s vs time (ms)")
+                        .configure_axis(grid=True, gridColor="#e5e7eb", gridOpacity=0.35)
+                    )
+                    st.altair_chart(scatter, use_container_width=True)
+                    if i < len(seq) - 1:
+                        _hr()
 
             # Speedup complessivo pesato mostrato solo nelle viste speedup
-            if view in ("Speedup medio", "Speedup mediano") and (piv_mean is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_mean.columns))):
+            if view in ("Average speedup", "Median speedup") and (piv_mean is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_mean.columns))):
                 total_h = float(piv_mean["hadoop"].sum())
                 total_p = float(piv_mean["pyspark"].sum())
                 if total_p > 0:
-                    st.info(f"Speedup complessivo pesato (Hadoop/PySpark): {total_h/total_p:.2f}x")
+                    st.info(f"Weighted overall speedup (Hadoop/PySpark): {total_h/total_p:.2f}x")
         except Exception:
             pass
     except Exception as e:
-        st.error(f"Errore caricamento risultati: {e}")
+        st.error(f"Error loading results: {e}")
 CASES: List[QueryCase] = [
     QueryCase(
-        title="Roster + posizione/fisico",
+        title="Roster + position/physical",
         sql_raw=(
             """
 SELECT
@@ -875,7 +1058,7 @@ ORDER BY season DESC, player_name
         ),
     ),
     QueryCase(
-        title="Triple-doubles per giocatore",
+        title="Triple-doubles per player",
         sql_raw=(
             """
 SELECT LOWER(player_name) AS player_name, COUNT(*) AS triple_doubles
@@ -900,7 +1083,7 @@ ORDER BY triple_doubles DESC
         ),
     ),
     QueryCase(
-        title="Team meta (coach + arena) per BOS/LAL nel 2022",
+        title="Team metadata (coach + arena) for BOS/LAL in 2022",
         sql_raw=(
             """
 SELECT
@@ -956,7 +1139,7 @@ ORDER BY per DESC NULLS LAST
         ),
     ),
     QueryCase(
-        title="Partite con maggiore affluenza",
+        title="Most attended games",
         sql_raw=(
             """
 SELECT
@@ -1004,7 +1187,7 @@ ORDER BY attendance DESC
         ),
     ),
     QueryCase(
-        title="Statistiche avanzate di squadra (LAL vs BOS 2020)",
+        title="Team advanced stats (LAL vs BOS 2020)",
         sql_raw=(
             """
 SELECT
@@ -1037,7 +1220,7 @@ ORDER BY team_abbr
         ),
     ),
     QueryCase(
-        title="Affluenza media stagionale per squadra",
+        title="Season average attendance per team",
         sql_raw=(
             """
 SELECT
@@ -1175,7 +1358,7 @@ FROM memory.gav.dim_team_season
 WHERE team_abbr IN ({abbrs}) AND season = 2022
 ORDER BY team_abbr"""
         elif "Triple-doubles per giocatore" in case.title:
-            start, end = st.slider("Intervallo stagioni", 1950, 2025, (2010, 2020))
+            start, end = st.slider("Season range", 1950, 2025, (2010, 2020))
             dyn_raw = f"""
 SELECT LOWER(player_name) AS player_name, COUNT(*) AS triple_doubles
 FROM postgresql.staging.nba_player_box_score_stats_1950_2022
@@ -1242,7 +1425,7 @@ FROM memory.gav.global_team_season
 WHERE season = {int(season)}
   AND team_abbr IN ('{team1}','{team2}')
 ORDER BY team_abbr;"""
-        elif "Partite con maggiore affluenza" in case.title:
+        elif "Most attended games" in case.title:
             season_g = st.slider("Season", min_value=1946, max_value=2025, value=2025, step=1)
 
             dyn_raw = f"""
@@ -1295,7 +1478,7 @@ SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_cit
 FROM memory.gav.global_game
 WHERE season = {int(season_g)} AND attendance IS NOT NULL
 ORDER BY attendance DESC"""
-        elif "Affluenza media stagionale" in case.title:
+        elif "Season average attendance" in case.title:
             season = st.slider("Season", min_value=1981, max_value=2025, value=2025, step=1)
             dyn_gav = f"""
 SELECT season, team_abbr, team_name, attend, attend_g
@@ -1305,10 +1488,10 @@ ORDER BY attend DESC NULLS LAST"""
 
     col1, col2 = st.columns(2)
     with col1:
-        st.text("Sorgenti raw (senza GAV)")
+        st.text("RAW sources (no GAV)")
         st.code((dyn_raw or case.sql_raw).strip(), language="sql")
     with col2:
-        st.text("Vista globale (con GAV)")
+        st.text("Global view (GAV)")
         st.code((dyn_gav or case.sql_gav).strip(), language="sql")
 
     st.divider()
@@ -1318,14 +1501,14 @@ ORDER BY attend DESC NULLS LAST"""
         show_limit = False
     max_rows = 100
     if show_limit:
-        max_rows = st.slider("Limite righe", min_value=10, max_value=100, value=100, step=10)
-    run = st.button("Esegui SOLO la query GAV")
+        max_rows = st.slider("Row limit", min_value=10, max_value=100, value=100, step=10)
+    run = st.button("Run GAV query ONLY")
     if run:
         try:
-            with st.spinner("Eseguo la query GAV su Trino..."):
+            with st.spinner("Running GAV query on Trino..."):
                 df = run_query((dyn_gav or case.sql_gav), host, int(port), user, catalog="memory", schema="gav", max_rows=int(max_rows))
             if df.empty:
-                st.info("Nessun risultato (tabella vuota).")
+                st.info("No results (empty table).")
             else:
                 try:
                     df.index = df.index + 1
@@ -1348,5 +1531,13 @@ ORDER BY attend DESC NULLS LAST"""
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+
+
+
+
+
+
+
+
 
 

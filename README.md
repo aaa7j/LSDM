@@ -161,3 +161,49 @@ streamlit run app_pyspark_vs_hadoop.py
 - Computes average `wall_ms` per tool/query and `speedup_vs_hadoop`
 - Plots bars via Altair; optional Spark resource profile in expander
 
+## Exam Playbook (3 commands)
+
+Prereqs
+- Postgres running with the integrated datasets loaded (teams, games). Set env vars for JDBC.
+- Java (JDK) available for Spark; Python venv activated.
+
+1) Prepare Spark inputs via JDBC (Postgres)
+
+PowerShell (Windows):
+
+```
+$env:PG_HOST = "localhost"
+$env:PG_DB = "lsdm"
+$env:PG_USER = "postgres"
+$env:PG_PASSWORD = "postgres"
+python bigdata/spark/prepare_team_points.py --source postgres --warehouse warehouse
+```
+
+This reads from Postgres using Spark JDBC and writes Parquet/TSV under `warehouse/bigdata/`.
+If you don’t have the Postgres JDBC driver on the classpath, add it via packages:
+
+```
+$env:PYSPARK_SUBMIT_ARGS = "--packages org.postgresql:postgresql:42.7.3 pyspark-shell"
+```
+
+2) Run the benchmark and append a run to results
+
+```
+python scripts/run_bigdata_compare.py --runs 1 --topn 3 --append-results
+```
+
+This executes Hadoop Streaming and PySpark for q1/q2/q3 and appends a JSONL line per tool/query.
+
+3) Open the Streamlit dashboard
+
+```
+streamlit run ui_gav.py
+```
+
+The “Performance” page reads `results/pyspark_vs_hadoop.jsonl` and renders:
+- Tempi medi (1 decimale, barre affiancate per tool)
+- Speedup medio/mediano (3 decimali)
+- Distribuzioni con boxplot + punti grezzi
+- Trend per run (assi integri, griglia leggera)
+- Throughput con 3 grafici (uno per query)
+
