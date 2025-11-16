@@ -1,95 +1,82 @@
 erDiagram
-  PLAYER {
-    string  player_id PK
-    string  full_name
-    string  first_name
-    string  last_name
-    date    birthdate
-    string  country
-    string  height
-    string  weight
-    string  draft_year
-    string  draft_round
-    string  draft_number
-  }
 
-  TEAM {
-    string  team_abbr PK
-    string  team_name
-    string  city
-    string  arena_name
-    int     arena_capacity
-    string  league
-  }
+    PLAYER {
+        varchar player_id PK
+        varchar full_name
+        varchar first_name
+        varchar last_name
+        varchar birthdate
+        varchar country
+        varchar college
+        varchar height
+        varchar weight
+    }
 
-  TEAM_SEASON {
-    int     season
-    string  team_abbr FK
-    string  coach
-    PK      (season, team_abbr)
-  }
+    TEAM {
+        varchar team_abbr PK
+        varchar team_name
+        varchar city
+        varchar arena_name
+        integer arena_capacity
+        varchar coach
+        varchar league
+    }
 
-  GAME {
-    string  game_id PK
-    date    game_date
-    int     season
-    string  home_team_abbr FK
-    int     home_score
-    string  away_team_abbr FK
-    int     away_score
-    string  winner
-    int     attendance
-  }
+    TEAM_SEASON {
+        integer season PK
+        varchar team_abbr PK
+        integer games_played
+        double mov
+        double sos
+        double srs
+        double offensive_rating
+        double defensive_rating
+        double pace
+        double ts_percent
+        double attendance
+    }
 
-  PLAYER_GAME_BOX {
-    string  game_id FK
-    string  player_id FK
-    string  team_abbr FK
-    int     minutes
-    int     fgm
-    float   fga
-    float   fg_pct
-    float   fg3m
-    float   fg3a
-    float   fg3_pct
-    int     ftm
-    float   fta
-    float   ft_pct
-    float   oreb
-    float   dreb
-    float   reb
-    float   ast
-    float   stl
-    float   blk
-    float   tov
-    float   pf
-    int     pts
-    float   plus_minus
-    PK      (game_id, player_id)
-  }
+    GAME {
+        varchar game_id PK
+        date game_date
+        integer season
+        varchar home_team_abbr
+        varchar away_team_abbr
+        integer home_score
+        integer away_score
+        varchar winner
+        integer attendance
+    }
 
-  PLAYER_SEASON {
-    string  player_id FK
-    int     season
-    string  team_abbr FK
-    int     g
-    int     gs
-    float   pts_per_game
-    float   ast_per_game
-    float   trb_per_game
-    float   per
-    float   ts_percent
-    float   ws
-    float   bpm
-    float   vorp
-    PK      (player_id, season)
-  }
+    PLAYER_GAME_BOX {
+        varchar game_id PK
+        varchar player_id PK
+        varchar team_abbr
+        integer season
+        integer minutes
+        integer fgm
+        integer fga
+        double fg_pct
+        integer fg3m
+        integer fg3a
+        double fg3_pct
+        integer ftm
+        integer fta
+        double ft_pct
+        integer oreb
+        integer dreb
+        integer reb
+        integer ast
+        integer stl
+        integer blk
+        integer tov
+        integer pf
+        integer pts
+        double plus_minus
+    }
 
-  %% relationships
-  TEAM ||--o{ TEAM_SEASON : "team_abbr"
-  TEAM ||--o{ GAME : "home_team_abbr/away_team_abbr"
-  GAME ||--o{ PLAYER_GAME_BOX : "game_id"
-  PLAYER ||--o{ PLAYER_GAME_BOX : "player_id"
-  TEAM ||--o{ PLAYER_GAME_BOX : "team_abbr"
-  PLAYER ||--o{ PLAYER_SEASON : "player_id"
-  TEAM ||--o{ PLAYER_SEASON : "team_abbr"
+    PLAYER ||--o{ PLAYER_GAME_BOX : "plays in"
+    TEAM ||--o{ PLAYER_GAME_BOX : "appears in"
+    TEAM ||--o{ TEAM_SEASON : "has season"
+    TEAM ||--o{ GAME : "home/away"
+    GAME ||--o{ PLAYER_GAME_BOX : "contains stats"

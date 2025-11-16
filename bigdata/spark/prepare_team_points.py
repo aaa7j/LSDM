@@ -6,12 +6,16 @@ from pyspark.sql import SparkSession, functions as F
 
 def build_spark(app_name: str = "PrepareTeamPoints"):
     parts = max(2, (os.cpu_count() or 4) * 2)
-    return (
+    mem_driver = os.environ.get("SPARK_DRIVER_MEMORY", "4g")
+    mem_exec = os.environ.get("SPARK_EXECUTOR_MEMORY", mem_driver)
+    builder = (
         SparkSession.builder.appName(app_name)
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.shuffle.partitions", str(parts))
-        .getOrCreate()
+        .config("spark.driver.memory", mem_driver)
+        .config("spark.executor.memory", mem_exec)
     )
+    return builder.getOrCreate()
 
 
 def _read_points_from_postgres(spark: SparkSession, url: str, user: str, password: str,

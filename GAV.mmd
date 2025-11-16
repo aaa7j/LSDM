@@ -1,4 +1,5 @@
 erDiagram
+
   GLOBAL_PLAYER_SEASON {
     string  player_id
     int     season
@@ -18,9 +19,9 @@ erDiagram
     float   ws
     float   bpm
     float   vorp
-    string  src_position
     string  src_height
     string  src_weight
+    string  src_position
     PK      (player_id, season)
   }
 
@@ -30,27 +31,63 @@ erDiagram
     string  team_name
     string  city
     string  arena_name
-    int     arena_capacity
     string  coach
     string  league
     int     attend
     int     attend_g
-    float   mov
-    float   sos
-    float   srs
     float   o_rtg
     float   d_rtg
     float   n_rtg
     float   pace
     float   ts_percent
-    float   e_fg_percent
-    float   tov_percent
-    float   orb_percent
-    float   ft_fga
     string  src_arena
     string  src_coach
     PK      (season, team_abbr)
   }
 
-  %% logical join exposed to consumers
+  GLOBAL_GAME {
+    string  game_id
+    date    game_date
+    int     season
+    string  home_team_abbr
+    string  away_team_abbr
+    int     home_score
+    int     away_score
+    string  winner
+    int     attendance
+    PK      (game_id)
+  }
+
+  PLAYER_GAME_BOX {
+    string  game_id
+    string  player_id
+    string  team_abbr
+    int     season
+    int     minutes
+    int     fgm
+    int     fga
+    float   fg_pct
+    int     fg3m
+    int     fg3a
+    float   fg3_pct
+    int     ftm
+    int     fta
+    float   ft_pct
+    int     oreb
+    int     dreb
+    int     reb
+    int     ast
+    int     stl
+    int     blk
+    int     tov
+    int     pf
+    int     pts
+    float   plus_minus
+    PK      (game_id, player_id)
+  }
+
+  %% Relationships between GAV entities
   GLOBAL_PLAYER_SEASON }o--|| GLOBAL_TEAM_SEASON : "season, team_abbr"
+  GLOBAL_GAME }o--|| GLOBAL_TEAM_SEASON : "season, home/away_team_abbr"
+  GLOBAL_GAME ||--o{ PLAYER_GAME_BOX : "game_id"
+  GLOBAL_PLAYER_SEASON ||--o{ PLAYER_GAME_BOX : "player_id, season"

@@ -131,6 +131,127 @@ def diagnose(host: str, port: int, user: str):
                 report["mongodb.lsdm.tables"] = [r[0] for r in q("SHOW TABLES FROM mongodb.lsdm")]
     except Exception as e:
         report["error"] = str(e)
+    # Lightweight Data Quality (row counts, duplicates, null keys)
+    try:
+        def scalar(sql: str, catalog: str, schema: str) -> int | None:
+            try:
+                rows = q(sql, catalog, schema)
+                return int(rows[0][0]) if rows else None
+            except Exception:
+                return None
+
+        dq: dict[str, dict[str, int | None]] = {}
+
+        # Player season
+        base_ps = scalar(
+            """
+            SELECT COUNT(*) FROM (
+              SELECT DISTINCT player_id, TRY_CAST(season AS INTEGER) AS season
+              FROM player_totals
+              WHERE player_id IS NOT NULL AND season IS NOT NULL
+            ) t
+            """,
+            catalog="mongodb",
+            schema="lsdm",
+        )
+        gav_ps = scalar("SELECT COUNT(*) FROM global_player_season", catalog="memory", schema="gav")
+        dups_ps = scalar(
+            """
+            SELECT COUNT(*) FROM (
+              SELECT player_id, season, COUNT(*) c
+              FROM global_player_season
+              GROUP BY 1,2 HAVING COUNT(*) > 1
+            ) d
+            """,
+            catalog="memory",
+            schema="gav",
+        )
+        null_ps = scalar(
+            "SELECT COUNT(*) FROM global_player_season WHERE player_id IS NULL OR season IS NULL",
+            catalog="memory",
+            schema="gav",
+        )
+        dq["global_player_season"] = {
+            "base_distinct": base_ps,
+            "gav_rows": gav_ps,
+            "lost_vs_base": (base_ps - gav_ps) if (base_ps is not None and gav_ps is not None) else None,
+            "gav_duplicates": dups_ps,
+            "gav_null_keys": null_ps,
+        }
+
+        # Team season
+        base_ts = scalar(
+            """
+            SELECT COUNT(*) FROM (
+              SELECT DISTINCT TRY_CAST(season AS INTEGER) AS season, UPPER(abbreviation) AS abbr
+              FROM team_summaries
+              WHERE season IS NOT NULL AND abbreviation IS NOT NULL
+            ) t
+            """,
+            catalog="postgresql",
+            schema="staging",
+        )
+        gav_ts = scalar("SELECT COUNT(*) FROM global_team_season", catalog="memory", schema="gav")
+        dups_ts = scalar(
+            """
+            SELECT COUNT(*) FROM (
+              SELECT season, team_abbr, COUNT(*) c
+              FROM global_team_season
+              GROUP BY 1,2 HAVING COUNT(*) > 1
+            ) d
+            """,
+            catalog="memory",
+            schema="gav",
+        )
+        null_ts = scalar(
+            "SELECT COUNT(*) FROM global_team_season WHERE season IS NULL OR team_abbr IS NULL",
+            catalog="memory",
+            schema="gav",
+        )
+        dq["global_team_season"] = {
+            "base_distinct": base_ts,
+            "gav_rows": gav_ts,
+            "lost_vs_base": (base_ts - gav_ts) if (base_ts is not None and gav_ts is not None) else None,
+            "gav_duplicates": dups_ts,
+            "gav_null_keys": null_ts,
+        }
+
+        # Game
+        base_g = scalar(
+            """
+            SELECT COUNT(*) FROM (
+              SELECT DISTINCT game_id FROM games WHERE game_id IS NOT NULL
+            ) t
+            """,
+            catalog="mongodb",
+            schema="lsdm",
+        )
+        gav_g = scalar("SELECT COUNT(*) FROM global_game", catalog="memory", schema="gav")
+        dups_g = scalar(
+            """
+            SELECT COUNT(*) FROM (
+              SELECT game_id, COUNT(*) c FROM global_game GROUP BY 1 HAVING COUNT(*) > 1
+            ) d
+            """,
+            catalog="memory",
+            schema="gav",
+        )
+        null_g = scalar(
+            "SELECT COUNT(*) FROM global_game WHERE game_id IS NULL",
+            catalog="memory",
+            schema="gav",
+        )
+        dq["global_game"] = {
+            "base_distinct": base_g,
+            "gav_rows": gav_g,
+            "lost_vs_base": (base_g - gav_g) if (base_g is not None and gav_g is not None) else None,
+            "gav_duplicates": dups_g,
+            "gav_null_keys": null_g,
+        }
+
+        report["dq"] = dq
+    except Exception as e:
+        report["dq_error"] = str(e)
     return report
 
 
@@ -593,9 +714,7 @@ def render_hadoop_spark_page():
     force = st.checkbox("Force recompute (ignore reuse)", value=False)
     limit = st.slider("Rows to show", min_value=10, max_value=200, value=100, step=10)
     prefer_names = True  # always show team names (City + Name when possible)
-    topn = 3
-    if q == "q3":
-        topn = st.number_input("Top N (Q3)", min_value=1, max_value=20, value=3)
+    topn = 3  # fixed Top N for Q3
 
     colA, colB, colC, colD = st.columns(4)
     with colA:
@@ -635,6 +754,115 @@ def render_hadoop_spark_page():
             else:
                 st.error("Regeneration failed")
                 st.code(err or out)
+
+    # Show Hadoop vs PySpark query implementations
+    st.subheader("Query implementations")
+    col_h, col_s = st.columns(2)
+    if q == "q1":
+        with col_h:
+            st.markdown("**Hadoop Streaming (Python)**")
+            st.code(
+                """# mapper_q1_agg.py
+for line in sys.stdin:
+    season, team_id, points = line.split("\t")[:3]
+    key = season + "|" + team_id
+    print(f"{key}\t{int(points)}")
+
+# reducer_q1_agg.py
+for line in sys.stdin:
+    key, points = line.split("\t")
+    # accumulate sum and count per (season|team_id)
+    # emit: season \t team_id \t total_points \t avg_points \t games
+""",
+                language="python",
+            )
+        with col_s:
+            st.markdown("**PySpark (DataFrame API)**")
+            st.code(
+                """points = spark.read.parquet("team_game_points")
+agg = (
+    points.groupBy("season", "team_id")
+    .agg(
+        F.sum("points").alias("total_points"),
+        F.avg("points").alias("avg_points"),
+        F.count("points").alias("games"),
+    )
+    .select("season", "team_id", "total_points", "avg_points", "games")
+    .orderBy("season", "team_id")
+)""",
+                language="python",
+            )
+    elif q == "q2":
+        with col_h:
+            st.markdown("**Hadoop Streaming (Python)**")
+            st.code(
+                """# mapper_q2_join.py
+thr = int(os.environ.get("Q2_THRESHOLD", "120"))
+for line in sys.stdin:
+    season, team_id, points = line.split("\t")[:3]
+    key = season + "|" + team_id
+    print(f"{key}\tT\t1")
+    if int(points) >= thr:
+        print(f"{key}\tH\t1")
+
+# reducer_q2_join.py
+for line in sys.stdin:
+    key, tag, val = line.split("\t")
+    # accumulate H and T per key and emit pct_high
+""",
+                language="python",
+            )
+        with col_s:
+            st.markdown("**PySpark (DataFrame API)**")
+            st.code(
+                """points = spark.read.parquet("team_game_points")
+teams  = spark.read.parquet("teams_dim")
+hs = points.select(
+    "season",
+    "team_id",
+    (F.col("points") >= F.lit(120)).cast("int").alias("is_high"),
+)
+agg = (
+    hs.groupBy("season", "team_id")
+      .agg(F.sum("is_high").alias("high_games"),
+           F.count(F.lit(1)).alias("total_games"))
+      .withColumn("pct_high", F.round(F.col("high_games")/F.col("total_games"), 3))
+)
+joined = (
+    agg.join(teams, on="team_id", how="left")
+       .select("season", "team_id", "team_name", "high_games", "total_games", "pct_high")
+)""",
+                language="python",
+            )
+    elif q == "q3":
+        with col_h:
+            st.markdown("**Hadoop Streaming (Python)**")
+            st.code(
+                """# mapper_q3_topn.py
+for line in sys.stdin:
+    season, team_id, points, game_id = line.split("\t")[:4]
+    print("\t".join([team_id, points, season, game_id]))
+
+# reducer_q3_topn.py
+topn = int(os.environ.get("TOPN", "3"))
+for line in sys.stdin:
+    team_id, points, season, game_id = line.split("\t")[:4]
+    # maintain a small heap per team_id and emit top-N
+""",
+                language="python",
+            )
+        with col_s:
+            st.markdown("**PySpark (DataFrame API)**")
+            st.code(
+                """points = spark.read.parquet("team_game_points")
+w = Window.partitionBy("team_id").orderBy(F.col("points").desc(), F.col("game_id"))
+top = (
+    points.withColumn("rn", F.row_number().over(w))
+          .where(F.col("rn") <= F.lit(3))
+          .select("team_id", "season", "game_id", "points")
+)""",
+                language="python",
+            )
 
     st.subheader("Results")
     hs_render_results(only=q, limit=int(limit), prefer_names=True)
@@ -839,53 +1067,22 @@ def render_performance_page():
             elif view == "Average speedup" and (piv_mean is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_mean.columns))):
                 sp_mean = (piv_mean["hadoop"] / piv_mean["pyspark"]).reset_index(name="speedup_hadoop_over_pyspark")
                 st.subheader("Average speedup (Hadoop/PySpark)")
-                sp_mean_display = sp_mean.copy();
-                
-                
+                sp_mean_display = sp_mean.copy()
                 try:
                     sp_mean_display["speedup_hadoop_over_pyspark"] = sp_mean_display["speedup_hadoop_over_pyspark"].astype(float).round(3)
                 except Exception:
                     pass
-                st.dataframe(sp_mean_display)
-                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-                spc = (
-                    alt.Chart(sp_mean_display)
-                    .mark_bar(size=22)
-                    .encode(
-                        x="query:N",
-                        y=alt.Y("speedup_hadoop_over_pyspark:Q", title="Speedup (x)"),
-                        tooltip=[
-                            alt.Tooltip("query:N", title="Query"),
-                            alt.Tooltip("speedup_hadoop_over_pyspark:Q", title="Speedup (x)", format=".3f"),
-                        ],
-                    )
-                    .properties(width=560, title="Bars: average speedup (Hadoop/PySpark) by query")
-                )
-                st.altair_chart(spc, use_container_width=True)
+                st.dataframe(sp_mean_display, use_container_width=True)
+                # no chart: just show the table and weighted overall speedup
             elif view == "Median speedup" and (piv_median is not None) and ({"hadoop", "pyspark"}.issubset(set(piv_median.columns))):
                 sp_med = (piv_median["hadoop"] / piv_median["pyspark"]).reset_index(name="speedup_hadoop_over_pyspark_mediana")
                 st.subheader("Median speedup (Hadoop/PySpark)")
-                sp_med_display = sp_med.copy();
+                sp_med_display = sp_med.copy()
                 try:
                     sp_med_display["speedup_hadoop_over_pyspark_mediana"] = sp_med_display["speedup_hadoop_over_pyspark_mediana"].astype(float).round(3)
                 except Exception:
                     pass
-                st.dataframe(sp_med_display)
-                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-                spm = (
-                    alt.Chart(sp_med_display)
-                    .mark_bar(size=22)
-                    .encode(
-                        x="query:N",
-                        y=alt.Y("speedup_hadoop_over_pyspark_mediana:Q", title="Speedup (x)"),
-                        tooltip=[
-                            alt.Tooltip("query:N", title="Query"),
-                            alt.Tooltip("speedup_hadoop_over_pyspark_mediana:Q", title="Speedup (x)", format=".3f"),
-                        ],
-                    )
-                    .properties(width=560, title="Bars: median speedup (Hadoop/PySpark) by query")
-                )
-                st.altair_chart(spm, use_container_width=True)
+                st.dataframe(sp_med_display, use_container_width=True)
             elif view == "Extended statistics":
                 st.subheader("Extended statistics by tool/query")
                 stats_unit = stats_display.rename(columns={k: f"{k} (ms)" for k in ["mean_ms","median_ms","p95_ms","min_ms","max_ms","std_ms"] if k in stats_display.columns}); st.dataframe(stats_unit)
@@ -1017,6 +1214,113 @@ def render_performance_page():
             pass
     except Exception as e:
         st.error(f"Error loading results: {e}")
+
+
+def _load_storage_results(path: str = "results/pyspark_storage.jsonl"):
+    try:
+        rows = []
+        if not os.path.exists(path):
+            return []
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    pass
+        return rows
+    except Exception:
+        return []
+
+
+def render_pyspark_storage_page():
+    st.title("Performance: PySpark Parquet vs CSV/TSV")
+    st.caption("Compares PySpark timings using Parquet vs TSV inputs.")
+
+    data = _load_storage_results()
+    if not data:
+        st.info("No results yet. Run: python scripts/run_pyspark_storage_compare.py --runs 1 --topn 3")
+        return
+
+    import pandas as pd  # type: ignore
+    import numpy as np   # type: ignore
+    import altair as alt # type: ignore
+
+    df = pd.DataFrame(data)
+    if df.empty:
+        st.info("No results to show.")
+        return
+    def _norm_fmt(x: str):
+        t = str(x or "").lower()
+        if t in ("tsv", "csv"): return "tsv"
+        return "parquet" if "parquet" in t else (t or "parquet")
+    df["fmt"] = df.get("fmt", "parquet").apply(_norm_fmt)
+
+    df_num = df.copy()
+    for c in ("wall_ms", "rows"):
+        if c in df_num.columns:
+            df_num[c] = pd.to_numeric(df_num[c], errors="coerce")
+    g = df_num.groupby(["fmt", "query"], dropna=False, as_index=False)["wall_ms"].mean()
+    piv = g.pivot(index="query", columns="fmt", values="wall_ms").reset_index()
+    if piv.empty:
+        st.info("No data to show.")
+        return
+    display = piv.copy()
+    for c in [col for col in display.columns if c != "query"]:
+        try:
+            display[c] = display[c].astype(float).round(1)
+        except Exception:
+            pass
+    st.subheader("Average time per query (ms)")
+    st.dataframe(display, use_container_width=True)
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    melt_cols = [c for c in display.columns if c != "query"]
+    chart = (
+        alt.Chart(display)
+        .transform_fold(melt_cols, as_=["fmt", "wall_ms"])
+        .mark_bar()
+        .encode(
+            x=alt.X("query:N", axis=alt.Axis(labelAngle=0)),
+            xOffset="fmt:N",
+            y=alt.Y("wall_ms:Q", title="Time (ms)"),
+            color=alt.Color("fmt:N", sort=["parquet", "tsv"], title="Format"),
+            tooltip=[
+                alt.Tooltip("query:N", title="Query"),
+                alt.Tooltip("fmt:N", title="Format"),
+                alt.Tooltip("wall_ms:Q", title="Time (ms)", format=".1f"),
+            ],
+        )
+        .properties(title="Bars: average time (ms) by query and format")
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+    if {"parquet", "tsv"}.issubset(set(piv.columns)):
+        sp = (piv["tsv"] / piv["parquet"]).reset_index(name="speedup_tsv_over_parquet")
+        spd = sp.copy()
+        try:
+            spd["speedup_tsv_over_parquet"] = spd["speedup_tsv_over_parquet"].astype(float).round(3)
+        except Exception:
+            pass
+        st.subheader("Speedup (TSV/Parquet)")
+        st.dataframe(spd, use_container_width=True)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        spc = (
+            alt.Chart(spd)
+            .mark_bar(size=22)
+            .encode(
+                x="query:N",
+                y=alt.Y("speedup_tsv_over_parquet:Q", title="Speedup (x)"),
+                tooltip=[
+                    alt.Tooltip("query:N", title="Query"),
+                    alt.Tooltip("speedup_tsv_over_parquet:Q", title="Speedup (x)", format=".3f"),
+                ],
+            )
+            .properties(width=560, title="Bars: TSV/Parquet speedup by query")
+        )
+        st.altair_chart(spc, use_container_width=True)
 CASES: List[QueryCase] = [
     QueryCase(
         title="Roster + position/physical",
@@ -1083,7 +1387,7 @@ ORDER BY triple_doubles DESC
         ),
     ),
     QueryCase(
-        title="Team metadata (coach + arena) for BOS/LAL in 2022",
+	    title="Team metadata (coach + arena, 2022)",
         sql_raw=(
             """
 SELECT
@@ -1117,7 +1421,7 @@ ORDER BY team_abbr
         ),
     ),
     QueryCase(
-        title="Top 10 PER (2016, CLE)",
+        title="Top 10 PER per team",
         sql_raw=(
             """
 SELECT LOWER(pt.player) AS player_name, UPPER(pt.team) AS team_abbr, adv.per, adv.ts_percent, adv.ws, adv.vorp
@@ -1187,7 +1491,7 @@ ORDER BY attendance DESC
         ),
     ),
     QueryCase(
-        title="Team advanced stats (LAL vs BOS 2020)",
+	    title="Team advanced stats LAL vs BOS 2020",
         sql_raw=(
             """
 SELECT
@@ -1247,6 +1551,72 @@ ORDER BY attend DESC NULLS LAST
 """
         ),
     ),
+    QueryCase(
+        title="Home attendance vs team strength",
+        sql_raw=(
+            """
+WITH gg AS (
+  SELECT
+    COALESCE(
+      TRY_CAST(g.season AS INTEGER),
+      TRY_CAST(SUBSTR(CAST(g.season AS VARCHAR), 1, 4) AS INTEGER),
+      YEAR(
+        COALESCE(
+          CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+          CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE)
+        )
+      )
+    ) AS season,
+    LOWER(g.home.team_name) AS home_team_name,
+    TRY_CAST(
+      NULLIF(
+        CASE
+          WHEN REGEXP_LIKE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\\s]', ''), '^[0-9]+(\\.[0-9]{3})+$') THEN
+            REGEXP_REPLACE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\\s]', ''), '\\.', '')
+          WHEN REGEXP_LIKE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\\s]', ''), '^[0-9]+\\.[0-9]+$') THEN
+            REGEXP_EXTRACT(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\\s]', ''), '^([0-9]+)')
+          ELSE REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[^0-9]', '')
+        END,
+        ''
+      ) AS INTEGER
+    ) AS attendance
+  FROM mongodb.lsdm.games g
+  WHERE g.attendance IS NOT NULL
+)
+SELECT
+  gg.season,
+  LOWER(ta.team_name) AS team_name,
+  UPPER(ta.abbreviation) AS team_abbr,
+  CAST(ROUND(AVG(CAST(gg.attendance AS DOUBLE)), 0) AS INTEGER) AS avg_attendance,
+  COUNT(*) AS games
+FROM gg
+LEFT JOIN mongodb.lsdm.team_abbrev ta
+  ON TRY_CAST(ta.season AS INTEGER) = gg.season
+ AND LOWER(ta.team_name) = gg.home_team_name
+WHERE gg.season BETWEEN 2015 AND 2025
+GROUP BY gg.season, LOWER(ta.team_name), UPPER(ta.abbreviation)
+ORDER BY gg.season, team_abbr
+"""
+        ),
+        sql_gav=(
+            """
+SELECT 
+  g.season,
+  ts.team_abbr,
+  ts.team_name,
+  CAST(ROUND(AVG(CAST(g.attendance AS DOUBLE)), 0) AS INTEGER) AS avg_attendance,
+  COUNT(*) AS games
+FROM memory.gav.global_game g
+JOIN memory.gav.dim_team_season ts
+  ON ts.season = g.season
+ AND LOWER(ts.team_name) = LOWER(g.home_team_name)
+WHERE g.attendance IS NOT NULL
+  AND g.season BETWEEN 2015 AND 2025
+GROUP BY g.season, ts.team_abbr, ts.team_name
+ORDER BY g.season, ts.team_abbr
+"""
+        ),
+    ),
 ]
 
 
@@ -1255,14 +1625,17 @@ def main():
 
     # Sidebar navigation between pages
     with st.sidebar:
-        st.subheader("Pagine")
-        _page = st.radio("Seleziona", ["RAW vs GAV", "Hadoop vs PySpark", "Performance"], index=0)
+        st.subheader("Pages")
+        _page = st.radio("Select", ["RAW vs GAV", "Hadoop vs PySpark", "Performance", "PySpark Storage"], index=0)
 
     if _page == "Hadoop vs PySpark":
         render_hadoop_spark_page()
         return
     if _page == "Performance":
         render_performance_page()
+        return
+    if _page == "PySpark Storage":
+        render_pyspark_storage_page()
         return
 
     # Default page: RAW vs GAV (unchanged)
@@ -1280,24 +1653,24 @@ def main():
                 st.success(msg)
             except Exception as e:
                 st.error(f"Errore nell'applicare le viste: {e}")
-        if st.button("Diagnostica"):
+        if st.button("Diagnostics"):
             try:
                 rep = diagnose(host, int(port), user)
-                st.write(rep)
+                st.json(rep)
             except Exception as e:
-                st.error(f"Errore diagnostica: {e}")
+                st.error(f"Diagnostics error: {e}")
 
     case_titles = [c.title for c in CASES]
-    choice = st.selectbox("Caso", options=case_titles, index=0)
+    choice = st.selectbox("Case", options=case_titles, index=0)
     case = next(c for c in CASES if c.title == choice)
 
     dyn_raw = case.sql_raw
     dyn_gav = case.sql_gav
 
-    with st.expander("Parametri", expanded=True):
-        if "Roster + posizione" in case.title:
+    with st.expander("Parameters", expanded=True):
+        if "Roster + position" in case.title:
             team = st.text_input("Team abbr", value="LAL").upper()
-            y1, y2 = st.slider("Intervallo stagioni", 1950, 2025, (2019, 2021))
+            y1, y2 = st.slider("Season range", 1950, 2025, (2019, 2021))
             dyn_raw = f"""
 SELECT
   COALESCE(LOWER(cpi.full_name), LOWER(pt.player)) AS player_name,
@@ -1328,8 +1701,8 @@ SELECT player_name, season, team_abbr, position, height_cm, weight_kg
 FROM memory.gav.global_player_season
 WHERE team_abbr = '{team}' AND season BETWEEN {y1} AND {y2}
 ORDER BY season DESC, player_name"""
-        elif "Team meta (coach + arena)" in case.title:
-            teams_in = st.text_input("Team abbr (lista)", value="BOS,LAL")
+        elif "Team metadata (coach + arena)" in case.title:
+            teams_in = st.text_input("Team abbr (list)", value="BOS,LAL")
             abbr_list = [re.sub(r"[^A-Za-z]", "", t).upper() for t in teams_in.split(',') if t.strip()]
             abbrs = ",".join([f"'{t}'" for t in abbr_list]) or "'BOS','LAL'"
             dyn_raw = f"""
@@ -1357,7 +1730,7 @@ SELECT season, team_abbr, team_name, coach, arena_name
 FROM memory.gav.dim_team_season
 WHERE team_abbr IN ({abbrs}) AND season = 2022
 ORDER BY team_abbr"""
-        elif "Triple-doubles per giocatore" in case.title:
+        elif "Triple-doubles per player" in case.title:
             start, end = st.slider("Season range", 1950, 2025, (2010, 2020))
             dyn_raw = f"""
 SELECT LOWER(player_name) AS player_name, COUNT(*) AS triple_doubles
@@ -1384,7 +1757,7 @@ FROM memory.gav.global_player_season
 WHERE season = {int(season)} AND team_abbr = '{team}'
 ORDER BY per DESC NULLS LAST
 LIMIT 10"""
-        elif "Statistiche avanzate di squadra" in case.title:
+        elif "Team advanced stats" in case.title:
             season = st.slider("Season", min_value=1961, max_value=2025, value=2020, step=1)
             team1 = re.sub(r"[^A-Za-z]", "", st.text_input("Team A", value="LAL")).upper()
             team2 = re.sub(r"[^A-Za-z]", "", st.text_input("Team B", value="BOS")).upper()
@@ -1478,6 +1851,104 @@ SELECT game_id, game_date, season, home_team_city, home_team_name, away_team_cit
 FROM memory.gav.global_game
 WHERE season = {int(season_g)} AND attendance IS NOT NULL
 ORDER BY attendance DESC"""
+        elif "Home attendance vs team strength" in case.title:
+            season_h = st.slider("Season", min_value=1950, max_value=2025, value=2020, step=1)
+            dyn_raw = f"""
+WITH gg AS (
+  SELECT
+    CASE
+      WHEN g.season IS NOT NULL THEN
+        COALESCE(
+          TRY_CAST(g.season AS INTEGER),
+          TRY_CAST(SUBSTR(CAST(g.season AS VARCHAR), 1, 4) AS INTEGER)
+        )
+      ELSE
+        CASE
+          WHEN
+            COALESCE(
+              CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+              CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+              TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+            ) IS NOT NULL
+          THEN
+            CASE
+              WHEN MONTH(
+                COALESCE(
+                  CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+                  CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+                  TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+                )
+              ) >= 7
+              THEN YEAR(
+                COALESCE(
+                  CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+                  CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+                  TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+                )
+              )
+              ELSE YEAR(
+                COALESCE(
+                  CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+                  CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+                  TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+                )
+              ) - 1
+            END
+          ELSE NULL
+        END
+    END AS season,
+    LOWER(g.home.team_name) AS home_team_name,
+    TRY_CAST(
+      NULLIF(
+        CASE
+          WHEN REGEXP_LIKE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\\s]', ''), '^[0-9]+(\\.[0-9]{3})+$') THEN
+            REGEXP_REPLACE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\\s]', ''), '\\.', '')
+          WHEN REGEXP_LIKE(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\\s]', ''), '^[0-9]+\\.[0-9]+$') THEN
+            REGEXP_EXTRACT(REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[,\\s]', ''), '^([0-9]+)')
+          ELSE REGEXP_REPLACE(CAST(g.attendance AS VARCHAR), '[^0-9]', '')
+        END,
+        ''
+      ) AS INTEGER
+    ) AS attendance
+  FROM mongodb.lsdm.games g
+ WHERE g.attendance IS NOT NULL
+)
+SELECT
+  gg.season,
+  LOWER(ta.team_name) AS team_name,
+  UPPER(ta.abbreviation) AS team_abbr,
+  CAST(ROUND(AVG(CAST(gg.attendance AS DOUBLE)), 0) AS INTEGER) AS avg_attendance,
+  COUNT(*) AS games
+FROM gg
+LEFT JOIN mongodb.lsdm.team_abbrev ta
+  ON TRY_CAST(ta.season AS INTEGER) = gg.season
+ AND LOWER(ta.team_name) = gg.home_team_name
+WHERE gg.season = {int(season_h)}
+GROUP BY gg.season, LOWER(ta.team_name), UPPER(ta.abbreviation)
+ORDER BY avg_attendance DESC, team_abbr"""
+            dyn_gav = f"""
+WITH home AS (
+  SELECT
+    g.season,
+    LOWER(g.home_team_name) AS team_name,
+    CAST(ROUND(AVG(CAST(g.attendance AS DOUBLE)), 0) AS INTEGER) AS avg_attendance,
+    COUNT(*) AS games,
+    AVG(CASE WHEN g.home_score > g.away_score THEN 1.0 ELSE 0.0 END) AS win_pct,
+    AVG(CAST(g.home_score - g.away_score AS DOUBLE))                 AS mov_home
+  FROM memory.gav.global_game g
+  WHERE g.attendance IS NOT NULL
+    AND g.season = {int(season_h)}
+  GROUP BY g.season, LOWER(g.home_team_name)
+)
+SELECT 
+  season,
+  team_name,
+  avg_attendance,
+  games,
+  ROUND(win_pct, 3)   AS win_pct_home,
+  ROUND(mov_home, 1)  AS mov_home
+FROM home
+ORDER BY avg_attendance DESC, team_name"""
         elif "Season average attendance" in case.title:
             season = st.slider("Season", min_value=1981, max_value=2025, value=2025, step=1)
             dyn_gav = f"""
@@ -1502,7 +1973,7 @@ ORDER BY attend DESC NULLS LAST"""
     max_rows = 100
     if show_limit:
         max_rows = st.slider("Row limit", min_value=10, max_value=100, value=100, step=10)
-    run = st.button("Run GAV query ONLY")
+    run = st.button("Run GAV query")
     if run:
         try:
             with st.spinner("Running GAV query on Trino..."):

@@ -294,16 +294,47 @@ SELECT
     CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
     TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
   )                                                           AS game_date,
-  COALESCE(
-    TRY_CAST(g.season AS INTEGER),
-    TRY_CAST(SUBSTR(CAST(g.season AS VARCHAR),1,4) AS INTEGER),
-    YEAR(
+  CASE
+    WHEN g.season IS NOT NULL THEN
       COALESCE(
-        CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
-        CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE)
+        TRY_CAST(g.season AS INTEGER),
+        TRY_CAST(SUBSTR(CAST(g.season AS VARCHAR),1,4) AS INTEGER)
       )
-    )
-  ) AS season,
+    ELSE
+      CASE
+        WHEN
+          COALESCE(
+            CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+            CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+            TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+          ) IS NOT NULL
+        THEN
+          CASE
+            WHEN MONTH(
+              COALESCE(
+                CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+                CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+                TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+              )
+            ) >= 7
+            THEN YEAR(
+              COALESCE(
+                CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+                CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+                TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+              )
+            )
+            ELSE YEAR(
+              COALESCE(
+                CAST(try(from_iso8601_timestamp(CAST(g.date AS VARCHAR))) AS DATE),
+                CAST(TRY_CAST(CAST(g.date AS VARCHAR) AS TIMESTAMP) AS DATE),
+                TRY_CAST(SUBSTR(CAST(g.date AS VARCHAR), 1, 10) AS DATE)
+              )
+            ) - 1
+          END
+        ELSE NULL
+      END
+  END AS season,
   g.home.team_id          AS home_team_id,
   LOWER(g.home.team_city) AS home_team_city,
   LOWER(g.home.team_name) AS home_team_name,

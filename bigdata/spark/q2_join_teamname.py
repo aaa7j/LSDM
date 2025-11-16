@@ -3,23 +3,57 @@ import json
 import os
 import time
 from pyspark.sql import SparkSession, functions as F
+from pyspark.sql import types as T
 
 
 def build_spark(app_name: str = "Q2HighScoringShare"):
     parts = max(2, (os.cpu_count() or 4) * 2)
-    return (
+    mem_driver = os.environ.get("SPARK_DRIVER_MEMORY", "4g")
+    mem_exec = os.environ.get("SPARK_EXECUTOR_MEMORY", mem_driver)
+    builder = (
         SparkSession.builder.appName(app_name)
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.shuffle.partitions", str(parts))
-        .getOrCreate()
+        .config("spark.driver.memory", mem_driver)
+        .config("spark.executor.memory", mem_exec)
+    )
+    return builder.getOrCreate()
+
+
+def _read_points(spark: SparkSession, base: str, fmt: str):
+    if fmt.lower() in ("parquet", "pq"):
+        return spark.read.parquet(os.path.join(base, "team_game_points"))
+    schema = T.StructType([
+        T.StructField("season", T.StringType(), True),
+        T.StructField("team_id", T.StringType(), True),
+        T.StructField("points", T.IntegerType(), True),
+        T.StructField("game_id", T.StringType(), True),
+    ])
+    return (
+        spark.read.option("sep", "\t").option("header", "false").schema(schema)
+        .csv(os.path.join(base, "team_game_points_tsv"))
     )
 
 
-def run_q2(warehouse_dir: str, out_dir: str, threshold: int = 120):
+def _read_teams(spark: SparkSession, base: str, fmt: str):
+    if fmt.lower() in ("parquet", "pq"):
+        return spark.read.parquet(os.path.join(base, "teams_dim"))
+    schema = T.StructType([
+        T.StructField("team_id", T.StringType(), True),
+        T.StructField("team_city", T.StringType(), True),
+        T.StructField("team_name", T.StringType(), True),
+    ])
+    return (
+        spark.read.option("sep", "\t").option("header", "false").schema(schema)
+        .csv(os.path.join(base, "teams_dim_tsv"))
+    )
+
+
+def run_q2(warehouse_dir: str, out_dir: str, threshold: int = 120, fmt: str = "parquet", results_path: str | None = None):
     spark = build_spark()
     base = os.path.join(warehouse_dir, "bigdata")
-    points = spark.read.parquet(os.path.join(base, "team_game_points"))
-    teams = spark.read.parquet(os.path.join(base, "teams_dim"))
+    points = _read_points(spark, base, fmt)
+    teams = _read_teams(spark, base, fmt)
 
     t0 = time.perf_counter()
     hs = points.select(
@@ -42,8 +76,10 @@ def run_q2(warehouse_dir: str, out_dir: str, threshold: int = 120):
     elapsed = (time.perf_counter() - t0) * 1000.0
     rows_out = joined.count()
 
-    os.makedirs("results", exist_ok=True)
-    with open("results/pyspark_vs_hadoop.jsonl", "a", encoding="utf-8") as f:
+    if results_path is None:
+        results_path = "results/pyspark_vs_hadoop.jsonl"
+    os.makedirs(os.path.dirname(results_path) or "results", exist_ok=True)
+    with open(results_path, "a", encoding="utf-8") as f:
         f.write(
             json.dumps(
                 {
@@ -51,6 +87,7 @@ def run_q2(warehouse_dir: str, out_dir: str, threshold: int = 120):
                     "query": "q2_join_teamname",
                     "wall_ms": round(elapsed, 3),
                     "rows": int(rows_out),
+                    "fmt": fmt.lower(),
                 }
             )
             + "\n"
@@ -64,8 +101,10 @@ def main():
     ap.add_argument("--warehouse", default="warehouse")
     ap.add_argument("--out", default="outputs/spark/q2")
     ap.add_argument("--threshold", type=int, default=120)
+    ap.add_argument("--fmt", choices=["parquet", "tsv", "csv"], default="parquet")
+    ap.add_argument("--results", default=None)
     args = ap.parse_args()
-    run_q2(args.warehouse, args.out, args.threshold)
+    run_q2(args.warehouse, args.out, args.threshold, fmt=args.fmt, results_path=args.results)
 
 
 if __name__ == "__main__":
