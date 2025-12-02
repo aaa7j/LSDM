@@ -24,10 +24,12 @@ SAMPLE = [
     {"tool": "hadoop",  "query": "q1_agg_points",     "wall_ms": 10557.28, "rows": 143928},
     {"tool": "hadoop",  "query": "q2_join_teamname",  "wall_ms":  8946.57, "rows":  1692},
     {"tool": "hadoop",  "query": "q3_topn_games",     "wall_ms":  7833.34, "rows":     96, "topn": 3},
+    {"tool": "hadoop",  "query": "q4_playbyplay_usage", "wall_ms": 11250.00, "rows": 13108},
     # PySpark (ms)
     {"tool": "pyspark", "query": "q1_agg_points",     "wall_ms":  6514.41, "rows": 143928},
     {"tool": "pyspark", "query": "q2_join_teamname",  "wall_ms":  3924.04, "rows":  1692},
     {"tool": "pyspark", "query": "q3_topn_games",     "wall_ms":  6459.10, "rows":     96, "topn": 3},
+    {"tool": "pyspark", "query": "q4_playbyplay_usage", "wall_ms":  8450.90, "rows": 13108},
 ]
 
 
@@ -46,4 +48,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

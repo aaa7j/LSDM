@@ -186,6 +186,55 @@ emit_sorted_heap(heap) # in descending points order</div>
     </div>
   </div>
 
+  <!-- Query 4 -->
+  <div class="section">
+    <h2>Query 4: Ranking multifattore (minuti, usage, TS%, PTS/36)</h2>
+    <div class="query-container">
+      <div class="query-half">
+        <h3>PySpark SQL <button class="btn secondary" id="run-pyspark-q4">Esegui</button></h3>
+        <div class="query-code">df = spark.read.csv("warehouse/bigdata/q4_multifactor.tsv", sep="\\t", schema=schema)
+.where(col("g") >= 10)
+.withColumn("minutes_per_game", round(col("mp")/col("g"), 1))
+.withColumn("team_minutes_share", round(100*col("mp")/sum("mp").over(win_team), 1))
+.withColumn("est_points", col("pts_per_36") * col("mp") / 36)
+.withColumn("team_pts_share", round(100*col("est_points")/col("team_pts"), 1))
+.withColumn("score",
+  0.45*(col("team_minutes_share")/100) +
+  0.20*(col("usage_pct")/35) +
+  0.20*col("ts_percent") +
+  0.15*(col("pts_per_36")/40))
+win = Window.partitionBy("season","team_abbr").orderBy(col("score").desc(), col("team_minutes_share").desc(), col("mp").desc())
+out = df.withColumn("rank", row_number().over(win)).where(col("rank") <= 15)</div>
+      </div>
+      <div class="query-half">
+        <h3>Hadoop MapReduce <button class="btn secondary" id="run-hadoop-q4">Esegui</button></h3>
+        <p>Mapper:</p>
+        <div class="query-code"># Input TSV pre-join: season,team,player_id,player_name,pos,g,gs,mp,usage,ts,pts36,team_pts,...
+# Output: key=season|team \t fields...
+for line in stdin:
+  # parse, filter g>=10, emit key + metrics</div>
+        <p>Reducer:</p>
+        <div class="query-code"># Group by season|team, sum team minutes, compute:
+# minutes_share, team_pts_share, score=
+# 0.45*(minutes_share/100) +
+# 0.20*(usage/35) + 0.20*ts + 0.15*(pts36/40)
+# Emit top 15 per team ordered by score.
+</div>
+      </div>
+    </div>
+    <h3>Results</h3>
+    <div class="query-container">
+      <div class="query-half">
+        <h4>Hadoop</h4>
+        <table id="hadoop-q4"><thead><tr><th>season</th><th>team</th><th>player_name</th><th>pos</th><th>g</th><th>gs</th><th>mp</th><th>mpg</th><th>usage</th><th>ts%</th><th>pts/36</th><th>min_share%</th><th>pts_share%</th><th>score</th><th>rank</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="query-half">
+        <h4>PySpark</h4>
+        <table id="spark-q4"><thead><tr><th>season</th><th>team</th><th>player_name</th><th>pos</th><th>g</th><th>gs</th><th>mp</th><th>mpg</th><th>usage</th><th>ts%</th><th>pts/36</th><th>min_share%</th><th>pts_share%</th><th>score</th><th>rank</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
   <!-- PySpark Results section removed; results now appear side-by-side per query -->
 
   </div>
@@ -200,10 +249,28 @@ emit_sorted_heap(heap) # in descending points order</div>
     }
 
     function renderTable(selector, rows, cols){
+      function isMultiTeamTeamCode(val){
+        if(!val) return false;
+        const s = String(val).trim().toUpperCase();
+        if(s.length < 3) return false;
+        if(!s.endsWith('TM')) return false;
+        const prefix = s.slice(0, -2);
+        return /^[0-9]+$/.test(prefix);
+      }
       const tbody = document.querySelector(selector + ' tbody');
       tbody.innerHTML = '';
       if(!rows || rows.length==0) { tbody.innerHTML = '<tr><td colspan="'+cols.length+'">(no rows)</td></tr>'; return }
-      rows.slice(0,10).forEach(r=>{
+      const filtered = (rows || []).filter(r=>{
+        // For Q4 tables, the team code is at index 1 or field 'team'/'team_abbr'
+        let team = null;
+        if(Array.isArray(r)){
+          team = r[1];
+        } else if(r && typeof r === 'object'){
+          team = r.team || r.team_abbr || r.team_id;
+        }
+        return !isMultiTeamTeamCode(team);
+      });
+      filtered.slice(0,10).forEach(r=>{
         const tr = document.createElement('tr');
         if (Array.isArray(r)){
           for (let i=0;i<cols.length;i++){
@@ -229,13 +296,15 @@ emit_sorted_heap(heap) # in descending points order</div>
       const q1 = await loadJSON('data/q1.json');
       const q2 = await loadJSON('data/q2.json');
       const q3 = await loadJSON('data/q3.json');
-      return { q1: (q1 && q1.rows) ? q1.rows : [], q2: (q2 && q2.rows) ? q2.rows : [], q3: (q3 && q3.rows) ? q3.rows : [] };
+      const q4 = await loadJSON('data/q4.json');
+      return { q1: (q1 && q1.rows) ? q1.rows : [], q2: (q2 && q2.rows) ? q2.rows : [], q3: (q3 && q3.rows) ? q3.rows : [], q4: (q4 && q4.rows) ? q4.rows : [] };
     }
     async function loadSpark(){
       const q1 = await loadJSON('data/spark_q1.json');
       const q2 = await loadJSON('data/spark_q2.json');
       const q3 = await loadJSON('data/spark_q3.json');
-      return { q1: (q1 && q1.rows) ? q1.rows : [], q2: (q2 && q2.rows) ? q2.rows : [], q3: (q3 && q3.rows) ? q3.rows : [] };
+      const q4 = await loadJSON('data/spark_q4.json');
+      return { q1: (q1 && q1.rows) ? q1.rows : [], q2: (q2 && q2.rows) ? q2.rows : [], q3: (q3 && q3.rows) ? q3.rows : [], q4: (q4 && q4.rows) ? q4.rows : [] };
     }
 
     async function callRun(tool, query, topn){
@@ -263,9 +332,11 @@ emit_sorted_heap(heap) # in descending points order</div>
       renderTable('#hadoop-q1', hadoop.q1, ['season','team_id','total_points','avg_points','games']);
       renderTable('#hadoop-q2', hadoop.q2, ['season','team_id','team_name','total_points','avg_points','games']);
       renderTable('#hadoop-q3', hadoop.q3, ['team_id','season','game_id','points']);
+      renderTable('#hadoop-q4', hadoop.q4, ['season','team','player_name','pos','g','gs','mp','minutes_per_game','usage_pct','ts_percent','pts_per_36','team_minutes_share','team_pts_share','score','rank']);
       renderTable('#spark-q1', pyspark.q1, ['season','team_id','total_points','avg_points','games']);
       renderTable('#spark-q2', pyspark.q2, ['season','team_id','team_name','total_points','avg_points','games']);
       renderTable('#spark-q3', pyspark.q3, ['team_id','season','game_id','points']);
+      renderTable('#spark-q4', pyspark.q4, ['season','team_abbr','player_name','pos','g','gs','mp','minutes_per_game','usage_pct','ts_percent','pts_per_36','team_minutes_share','team_pts_share','score','rank']);
     }
 
     // Init summary and bind run buttons; no auto-load
@@ -283,9 +354,11 @@ emit_sorted_heap(heap) # in descending points order</div>
     bind('run-hadoop-q1','hadoop','q1');
     bind('run-hadoop-q2','hadoop','q2');
     bind('run-hadoop-q3','hadoop','q3');
+    bind('run-hadoop-q4','hadoop','q4');
     bind('run-pyspark-q1','pyspark','q1');
     bind('run-pyspark-q2','pyspark','q2');
     bind('run-pyspark-q3','pyspark','q3');
+    bind('run-pyspark-q4','pyspark','q4');
 
     // Auto-load any pre-generated JSON on page open so the tables
     // are not empty if the user already ran jobs via scripts.

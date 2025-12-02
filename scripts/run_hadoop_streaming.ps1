@@ -1,6 +1,6 @@
 param(
   [int]$TopN = 3,
-  [ValidateSet('all','q1','q2','q3')][string]$Only = 'all',
+  [ValidateSet('all','q1','q2','q3','q4')][string]$Only = 'all',
   $Reuse = $true
 )
 
@@ -65,10 +65,12 @@ Ensure-ContainerPython -Containers @('hadoop-resourcemanager','hadoop-nodemanage
 if ($PY) {
   & $PY bigdata/hadoop/prep/flatten_games_to_tsv.py --games data/json/games.jsonl --out warehouse/bigdata/team_game_points_tsv
   & $PY bigdata/hadoop/prep/build_teams_dim.py --inp warehouse/bigdata/team_game_points_tsv --out warehouse/bigdata/teams_dim_tsv --team-details data/json/team_details.jsonl
+  & $PY bigdata/hadoop/prep/build_q4_multifactor.py --play data/_player_play_by_play_staging.csv --per-game "data/Player Per Game.csv" --advanced data/Advanced.csv --team-totals "data/Team Totals.csv" --out warehouse/bigdata/q4_multifactor.tsv
 } else {
   Ensure-ContainerPython -Containers @('hadoop-resourcemanager')
   docker exec hadoop-resourcemanager bash -c "python3 /workspace/bigdata/hadoop/prep/flatten_games_to_tsv.py --games /workspace/data/json/games.jsonl --out /workspace/warehouse/bigdata/team_game_points_tsv"
   docker exec hadoop-resourcemanager bash -c "python3 /workspace/bigdata/hadoop/prep/build_teams_dim.py --inp /workspace/warehouse/bigdata/team_game_points_tsv --out /workspace/warehouse/bigdata/teams_dim_tsv --team-details /workspace/data/json/team_details.jsonl"
+  docker exec hadoop-resourcemanager bash -c "python3 /workspace/bigdata/hadoop/prep/build_q4_multifactor.py --play /workspace/data/_player_play_by_play_staging.csv --per-game '/workspace/data/Player Per Game.csv' --advanced /workspace/data/Advanced.csv --team-totals '/workspace/data/Team Totals.csv' --out /workspace/warehouse/bigdata/q4_multifactor.tsv"
 }
 
 # Ensure HDFS is writable (not in safemode) before using it
@@ -77,6 +79,8 @@ Wait-HdfsReady
 # 2) Carica in HDFS (pulizia + singolo file TSV per evitare duplicazioni)
 docker exec hadoop-namenode bash -c "/opt/hadoop-3.2.1/bin/hdfs dfs -rm -r -f /input/team_game_points_tsv; /opt/hadoop-3.2.1/bin/hdfs dfs -mkdir -p /input/team_game_points_tsv; /opt/hadoop-3.2.1/bin/hdfs dfs -put -f /workspace/warehouse/bigdata/team_game_points_tsv/part-00000.tsv /input/team_game_points_tsv/"
 docker exec hadoop-namenode bash -c "/opt/hadoop-3.2.1/bin/hdfs dfs -rm -r -f /input/teams_dim_tsv; /opt/hadoop-3.2.1/bin/hdfs dfs -mkdir -p /input/teams_dim_tsv; /opt/hadoop-3.2.1/bin/hdfs dfs -put -f /workspace/warehouse/bigdata/teams_dim_tsv/part-00000.tsv /input/teams_dim_tsv/"
+# Q4 input: enriched TSV (play-by-play + per-game + advanced + team totals)
+docker exec hadoop-namenode bash -c "/opt/hadoop-3.2.1/bin/hdfs dfs -rm -f /input/q4_multifactor.tsv; /opt/hadoop-3.2.1/bin/hdfs dfs -mkdir -p /input; /opt/hadoop-3.2.1/bin/hdfs dfs -put -f /workspace/warehouse/bigdata/q4_multifactor.tsv /input/q4_multifactor.tsv"
 
 $jarPath = Get-StreamingJar
 if (-not $jarPath) { throw "Cannot find hadoop-streaming jar in container" }
@@ -120,6 +124,17 @@ if ($Only -eq 'all' -or $Only -eq 'q3') {
     docker exec hadoop-resourcemanager bash -c "/opt/hadoop-3.2.1/bin/hdfs dfs -rm -r -f /output/q3; export TOPN=$TopN; /opt/hadoop-3.2.1/bin/hadoop jar $jarPath -D mapreduce.job.reduces=1 -files /workspace/bigdata/hadoop/streaming/mapper_q3_topn.py,/workspace/bigdata/hadoop/streaming/reducer_q3_topn.py -mapper 'python3 mapper_q3_topn.py' -reducer 'python3 reducer_q3_topn.py' -input /input/team_game_points_tsv -output /output/q3"
     docker exec hadoop-namenode bash -c "/opt/hadoop-3.2.1/bin/hdfs dfs -cat /output/q3/part-* > /tmp/q3.tsv"
     docker cp hadoop-namenode:/tmp/q3.tsv outputs/hadoop/q3.tsv
+  }
+}
+
+if ($Only -eq 'all' -or $Only -eq 'q4') {
+  # Q4: play-by-play usage, directly from Player Play By Play.csv in HDFS
+  if ($Reuse -and (Test-Path 'outputs/hadoop/q4.tsv') -and ((Get-Item 'outputs/hadoop/q4.tsv').Length -gt 0)) {
+    Write-Host "[hadoop] Reuse ON: skipping q4 MR (outputs/hadoop/q4.tsv present)" -ForegroundColor DarkYellow
+  } else {
+    docker exec hadoop-resourcemanager bash -c "/opt/hadoop-3.2.1/bin/hdfs dfs -rm -r -f /output/q4; /opt/hadoop-3.2.1/bin/hadoop jar $jarPath -D mapreduce.job.reduces=1 -files /workspace/bigdata/hadoop/streaming/mapper_q4_playbyplay_usage.py,/workspace/bigdata/hadoop/streaming/reducer_q4_playbyplay_usage.py -mapper 'python3 mapper_q4_playbyplay_usage.py' -reducer 'python3 reducer_q4_playbyplay_usage.py' -input /input/q4_multifactor.tsv -output /output/q4"
+    docker exec hadoop-namenode bash -c "/opt/hadoop-3.2.1/bin/hdfs dfs -cat /output/q4/part-* > /tmp/q4.tsv"
+    docker cp hadoop-namenode:/tmp/q4.tsv outputs/hadoop/q4.tsv
   }
 }
 

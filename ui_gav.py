@@ -457,6 +457,10 @@ def _filter_non_nba(rows, q: str):
     Supports both list-based rows and dict rows.
     q: 'q1' | 'q2' | 'q3' to resolve index of team_id for list rows.
     """
+    def _is_multi_team(tid: str) -> bool:
+        tid = (tid or "").strip().upper()
+        return len(tid) >= 3 and tid.endswith("TM") and tid[:-2].isdigit()
+
     out = []
     for r in rows or []:
         try:
@@ -465,7 +469,7 @@ def _filter_non_nba(rows, q: str):
             else:
                 idx = 1 if q in ("q1", "q2") else 0  # q3 has team_id at position 0
                 tid = str(r[idx]) if len(r) > idx else ""
-            if tid and tid in _EXCLUDE_TEAM_IDS:
+            if tid and (tid in _EXCLUDE_TEAM_IDS or _is_multi_team(tid)):
                 continue
         except Exception:
             pass
@@ -474,8 +478,8 @@ def _filter_non_nba(rows, q: str):
 
 
 def hs_render_results(only: str | None = None, limit: int = 100, prefer_names: bool = False):
-    """Render side-by-side tables for Hadoop and Spark for q1/q2/q3 from web/data JSON files.
-    - only: 'q1' | 'q2' | 'q3' to render a single query; None renders all in tabs.
+    """Render side-by-side tables for Hadoop and Spark for q1/q2/q3/q4 from web/data JSON files.
+    - only: 'q1' | 'q2' | 'q3' | 'q4' to render a single query; None renders all in tabs.
     - limit: max rows to display per table.
     - prefer_names: when True and only=='q1', replace team_id with team_name if available (via q2 mapping).
     """
@@ -489,11 +493,14 @@ def hs_render_results(only: str | None = None, limit: int = 100, prefer_names: b
         # Q2 raw shape: season, team_id, team_name, high_games, total_games, pct_high
         "q2": ["season", "team_id", "team_name", "high_games", "total_games", "pct_high"],
         "q3": ["team_id", "season", "game_id", "points"],
+        # Q4 multifactor: minutes share, usage, TS%, pts/36, score, rank
+        "q4": ["season", "team", "player_name", "pos", "g", "gs", "mp", "minutes_per_game", "usage_pct", "ts_percent", "pts_per_36", "team_minutes_share", "team_pts_share", "score", "rank"],
     }
     files = {
         "q1": ("web/data/q1.json", "web/data/spark_q1.json"),
         "q2": ("web/data/q2.json", "web/data/spark_q2.json"),
         "q3": ("web/data/q3.json", "web/data/spark_q3.json"),
+        "q4": ("web/data/q4.json", "web/data/spark_q4.json"),
     }
 
     def _normalize(rows, headers):
@@ -513,9 +520,9 @@ def hs_render_results(only: str | None = None, limit: int = 100, prefer_names: b
                 out.append([str(r)] + [""] * (len(headers) - 1))
         return out
 
-    queries = ["q1", "q2", "q3"] if not only else [only]
+    queries = ["q1", "q2", "q3", "q4"] if not only else [only]
     if only is None:
-        tabs = st.tabs(["Q1", "Q2", "Q3"])
+        tabs = st.tabs(["Q1", "Q2", "Q3", "Q4"])
     for idx, q in enumerate(queries):
         container = tabs[idx] if only is None else st.container()
         with container:
@@ -633,6 +640,25 @@ def hs_render_results(only: str | None = None, limit: int = 100, prefer_names: b
                 except Exception:
                     pass
                 headers = ["season", "team", "game_date", "points"]
+            elif q == "q4":
+                def _drop_multi_team(rows):
+                    out = []
+                    for r in rows or []:
+                        try:
+                            if isinstance(r, dict):
+                                tid = str(r.get("team") or r.get("team_abbr") or r.get("team_id") or "").upper()
+                            else:
+                                lst = list(r)
+                                tid = str(lst[1]).upper() if len(lst) > 1 else ""
+                            # Drop any multi-team aggregate like '2TM', '3TM', '5TM', etc.
+                            if len(tid) >= 3 and tid.endswith("TM") and tid[:-2].isdigit():
+                                continue
+                        except Exception:
+                            pass
+                        out.append(r)
+                    return out
+                h_rows = _drop_multi_team(h_rows)
+                s_rows = _drop_multi_team(s_rows)
 
             # Filter out seasons after 2024-25 and sort by season desc (recency)
             MAX_YEAR = 2024
@@ -647,11 +673,47 @@ def hs_render_results(only: str | None = None, limit: int = 100, prefer_names: b
             except Exception:
                 pass
 
+            # Optional filter for Q4: pick a single season and re-rank best players in the league
+            season_filter = None
+            if q == "q4":
+                try:
+                    seasons = sorted({str(r[0]) for r in (h_rows or [])} | {str(r[0]) for r in (s_rows or [])})
+                    if seasons:
+                        # Default to most recent season available
+                        default_idx = max(len(seasons) - 1, 0)
+                        season_filter = st.selectbox("Season", seasons, index=default_idx)
+
+                        def _apply_q4_season(rows):
+                            out = []
+                            for r in rows or []:
+                                try:
+                                    s = str(r[0])
+                                except Exception:
+                                    out.append(r)
+                                    continue
+                                if season_filter is not None and s != str(season_filter):
+                                    continue
+                                out.append(r)
+                            return out
+
+                        h_rows = _apply_q4_season(h_rows)
+                        s_rows = _apply_q4_season(s_rows)
+                except Exception:
+                    pass
+
             c1, c2 = st.columns(2)
             with c1:
                 st.text("Hadoop")
                 if h_rows and pd is not None:
-                    dfh = pd.DataFrame(_normalize(h_rows[:limit], headers), columns=headers)
+                    base_h = _normalize(h_rows, headers) if q == "q4" else _normalize(h_rows[:limit], headers)
+                    dfh = pd.DataFrame(base_h, columns=headers)
+                    # For Q4, re-rank by score at league level and show top-N
+                    if q == "q4" and "score" in dfh.columns:
+                        try:
+                            dfh["score"] = pd.to_numeric(dfh["score"], errors="coerce")
+                            dfh = dfh.sort_values("score", ascending=False).head(limit)
+                        except Exception:
+                            dfh = dfh.head(limit)
                     if "avg_points" in dfh.columns:
                         try:
                             dfh["avg_points"] = pd.to_numeric(dfh["avg_points"], errors="coerce").round(1)
@@ -675,7 +737,15 @@ def hs_render_results(only: str | None = None, limit: int = 100, prefer_names: b
             with c2:
                 st.text("PySpark")
                 if s_rows and pd is not None:
-                    dfs = pd.DataFrame(_normalize(s_rows[:limit], headers), columns=headers)
+                    base_s = _normalize(s_rows, headers) if q == "q4" else _normalize(s_rows[:limit], headers)
+                    dfs = pd.DataFrame(base_s, columns=headers)
+                    # For Q4, re-rank by score at league level and show top-N
+                    if q == "q4" and "score" in dfs.columns:
+                        try:
+                            dfs["score"] = pd.to_numeric(dfs["score"], errors="coerce")
+                            dfs = dfs.sort_values("score", ascending=False).head(limit)
+                        except Exception:
+                            dfs = dfs.head(limit)
                     if "avg_points" in dfs.columns:
                         try:
                             dfs["avg_points"] = pd.to_numeric(dfs["avg_points"], errors="coerce").round(1)
@@ -705,9 +775,10 @@ def render_hadoop_spark_page():
 
     # Query selector
     labels = {
-        "Q1 — Points aggregation (season, team)": "q1",
-        "Q2 — Share of high-scoring games (>=120)": "q2",
-        "Q3 — Top N games per team": "q3",
+        "Q1 - Points aggregation (season, team)": "q1",
+        "Q2 - Share of high-scoring games (>=120)": "q2",
+        "Q3 - Top N games per team": "q3",
+        "Q4 - Ranking multifattore (usage, TS%, PTS/36, minuti)": "q4",
     }
     label = st.selectbox("Query", list(labels.keys()), index=0)
     q = labels[label]
@@ -760,19 +831,40 @@ def render_hadoop_spark_page():
     col_h, col_s = st.columns(2)
     if q == "q1":
         with col_h:
-            st.markdown("**Hadoop Streaming (Python)**")
+            st.markdown("**Hadoop Streaming (CLI + Python)**")
             st.code(
-                """# mapper_q1_agg.py
-for line in sys.stdin:
-    season, team_id, points = line.split("\t")[:3]
-    key = season + "|" + team_id
-    print(f"{key}\t{int(points)}")
+                """# Esecuzione (semplificata)
+hadoop jar hadoop-streaming.jar \\
+  -input team_game_points.tsv \\
+  -output outputs/hadoop/q1 \\
+  -mapper  \"python mapper_q1_agg.py\" \\
+  -reducer \"python reducer_q1_agg.py\"
 
-# reducer_q1_agg.py
+# mapper_q1_agg.py
+import sys
+
 for line in sys.stdin:
-    key, points = line.split("\t")
-    # accumulate sum and count per (season|team_id)
-    # emit: season \t team_id \t total_points \t avg_points \t games
+    season, team_id, points = line.split("\\t")[:3]
+    key = season + "|" + team_id
+    print(f"{key}\\t{int(points)}")
+
+# reducer_q1_agg.py (schema)
+import sys
+
+current_key = None
+total = 0
+count = 0
+for line in sys.stdin:
+    key, points = line.split("\\t")
+    if key != current_key and current_key is not None:
+        season, team_id = current_key.split("|", 1)
+        avg = total / count if count else 0
+        print(f"{season}\\t{team_id}\\t{total}\\t{avg}\\t{count}")
+        total = 0
+        count = 0
+    current_key = key
+    total += int(points)
+    count += 1
 """,
                 language="python",
             )
@@ -861,6 +953,43 @@ top = (
           .where(F.col("rn") <= F.lit(3))
           .select("team_id", "season", "game_id", "points")
 )""",
+                language="python",
+            )
+    elif q == "q4":
+        with col_h:
+            st.markdown("**Hadoop Streaming (Python)**")
+            st.code(
+                """# mapper_q4_playbyplay_usage.py
+# Input TSV (play-by-play + per-game + advanced + team totals)
+# season,team,player_id,player_name,pos,g,gs,mp,usage_pct,ts_percent,pts_per_36,team_pts,...
+print(f"{season}|{team}\\t{player_id}\\t{player_name}\\t{pos}\\t{g}\\t{gs}\\t{mp}\\t{usage_pct}\\t{ts}\\t{pts36}\\t{team_pts}")
+
+# reducer_q4_playbyplay_usage.py
+# Per (season|team):
+#   total_minutes = sum(mp)
+#   minutes_share = 100*mp/total_minutes
+#   est_points = pts_per_36 * mp / 36
+#   pts_share = 100*est_points/team_pts
+#   score = 0.45*(minutes_share/100) + 0.20*(usage/35) + 0.20*ts + 0.15*(pts36/40)
+#   emit top 15 by score""",
+                language="python",
+            )
+        with col_s:
+            st.markdown("**PySpark (DataFrame API)**")
+            st.code(
+                """df = spark.read.csv("warehouse/bigdata/q4_multifactor.tsv", sep="\\t", schema=schema)
+df = df.filter(col("g") >= 10)
+df = df.withColumn("minutes_per_game", round(col("mp")/col("g"), 1))
+df = df.withColumn("team_minutes_share", round(100*col("mp")/sum("mp").over(win_team), 1))
+df = df.withColumn("est_points", col("pts_per_36") * col("mp") / 36)
+df = df.withColumn("team_pts_share", round(100*col("est_points")/col("team_pts"), 1))
+df = df.withColumn("score",
+    0.45*(col("team_minutes_share")/100) +
+    0.20*(col("usage_pct")/35) +
+    0.20*col("ts_percent") +
+    0.15*(col("pts_per_36")/40))
+win = Window.partitionBy("season","team_abbr").orderBy(col("score").desc(), col("team_minutes_share").desc(), col("mp").desc())
+out = df.withColumn("rank", row_number().over(win)).where(col("rank") <= 15)""",
                 language="python",
             )
 
@@ -1085,12 +1214,20 @@ def render_performance_page():
                 st.dataframe(sp_med_display, use_container_width=True)
             elif view == "Extended statistics":
                 st.subheader("Extended statistics by tool/query")
-                stats_unit = stats_display.rename(columns={k: f"{k} (ms)" for k in ["mean_ms","median_ms","p95_ms","min_ms","max_ms","std_ms"] if k in stats_display.columns}); st.dataframe(stats_unit)
+                stats_unit = stats_display.rename(columns={k: f"{k} (ms)" for k in ["mean_ms","median_ms","p95_ms","min_ms","max_ms","std_ms"] if k in stats_display.columns})
+                # Split by tool only (no combined table)
+                tools = sorted(stats_unit["tool"].dropna().unique().tolist()) if "tool" in stats_unit.columns else []
+                for t in tools:
+                    sub = stats_unit[stats_unit["tool"] == t]
+                    if sub.empty:
+                        continue
+                    st.markdown(f"**{t.capitalize()}**")
+                    st.dataframe(sub.reset_index(drop=True), use_container_width=True)
             elif view == "Distributions (box)":
                 st.subheader("Distributions (box) by query/tool")
                 st.caption("Boxplot for each query: median, quartiles and time (ms) outliers per tool.")
                 st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games"]
+                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games", "q4_playbyplay_usage"]
                 present = [q for q in order if "query" in df_ext.columns and q in df_ext["query"].unique().tolist()]
                 others = [q for q in (df_ext["query"].unique().tolist() if "query" in df_ext.columns else []) if q not in present]
                 seq = present + others
@@ -1143,7 +1280,7 @@ def render_performance_page():
                 st.subheader("Run trend (ms vs run)")
                 st.caption("Evolution of time (ms) per run, split by query and tool.")
                 st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games"]
+                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games", "q4_playbyplay_usage"]
                 present = [q for q in order if "query" in df_f.columns and q in df_f["query"].unique().tolist()]
                 others = [q for q in (df_f["query"].unique().tolist() if "query" in df_f.columns else []) if q not in present]
                 seq = present + others
@@ -1178,7 +1315,7 @@ def render_performance_page():
                 st.subheader("Throughput (rows/s) vs time (ms)")
                 df_thr = df_f[df_f["rows"].notna()].copy()
                 df_thr["thr_rows_s"] = df_thr["rows"] / (df_thr["wall_ms"] / 1000.0)
-                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games"]
+                order = ["q1_agg_points", "q2_join_teamname", "q3_topn_games", "q4_playbyplay_usage"]
                 present = [q for q in order if "query" in df_thr.columns and q in df_thr["query"].unique().tolist()]
                 others = [q for q in (df_thr["query"].unique().tolist() if "query" in df_thr.columns else []) if q not in present]
                 seq = present + others
@@ -1387,7 +1524,7 @@ ORDER BY triple_doubles DESC
         ),
     ),
     QueryCase(
-	    title="Team metadata (coach + arena, 2022)",
+        title="Team metadata (coach + arena)",
         sql_raw=(
             """
 SELECT
@@ -1403,7 +1540,7 @@ LEFT JOIN mongodb.lsdm.team_abbrev ta
 LEFT JOIN mongodb.lsdm.team_details td
   ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
 LEFT JOIN postgresql.staging.nba_head_coaches nhc
-  ON 2022 BETWEEN TRY_CAST(nhc.start_season_short AS INTEGER)
+  ON TRY_CAST(ts.season AS INTEGER) BETWEEN TRY_CAST(nhc.start_season_short AS INTEGER)
               AND TRY_CAST(nhc.end_season_short   AS INTEGER)
  AND REGEXP_LIKE(UPPER(nhc.teams), CONCAT('(^|[,\\s])', UPPER(COALESCE(ts.abbreviation, ta.abbreviation)), '([,\\s]|$)'))
 WHERE COALESCE(ts.abbreviation, ta.abbreviation) IN ('BOS','LAL')
@@ -1491,7 +1628,7 @@ ORDER BY attendance DESC
         ),
     ),
     QueryCase(
-	    title="Team advanced stats LAL vs BOS 2020",
+	    title="Team advanced stats head-to-head",
         sql_raw=(
             """
 SELECT
@@ -1602,22 +1739,119 @@ ORDER BY gg.season, team_abbr
             """
 SELECT 
   g.season,
-  ts.team_abbr,
-  ts.team_name,
-  CAST(ROUND(AVG(CAST(g.attendance AS DOUBLE)), 0) AS INTEGER) AS avg_attendance,
-  COUNT(*) AS games
-FROM memory.gav.global_game g
-JOIN memory.gav.dim_team_season ts
-  ON ts.season = g.season
- AND LOWER(ts.team_name) = LOWER(g.home_team_name)
-WHERE g.attendance IS NOT NULL
-  AND g.season BETWEEN 2015 AND 2025
-GROUP BY g.season, ts.team_abbr, ts.team_name
-ORDER BY g.season, ts.team_abbr
-"""
-        ),
-    ),
-]
+    ts.team_abbr,
+    ts.team_name,
+    CAST(ROUND(AVG(CAST(g.attendance AS DOUBLE)), 0) AS INTEGER) AS avg_attendance,
+    COUNT(*) AS games
+  FROM memory.gav.global_game g
+  JOIN memory.gav.dim_team_season ts
+    ON ts.season = g.season
+   AND LOWER(ts.team_name) = LOWER(g.home_team_name)
+  WHERE g.attendance IS NOT NULL
+    AND g.season BETWEEN 2015 AND 2025
+  GROUP BY g.season, ts.team_abbr, ts.team_name
+  ORDER BY g.season, ts.team_abbr
+  """
+          ),
+      ),
+      QueryCase(
+          title="Player usage by team (play-by-play)",
+          sql_raw=(
+              """
+  WITH base AS (
+    SELECT
+      TRY_CAST(season AS INTEGER) AS season,
+      UPPER(team)                 AS team_abbr,
+      player_id,
+      LOWER(player)               AS player_name,
+      pos                         AS position,
+      g,
+      gs,
+      TRY_CAST(mp AS DOUBLE)      AS minutes
+    FROM postgresql.staging.player_play_by_play
+    WHERE TRY_CAST(season AS INTEGER) = 2025
+      AND UPPER(team) = 'LAL'
+  ),
+  agg AS (
+    SELECT
+      season,
+      team_abbr,
+      player_id,
+      player_name,
+      position,
+      g,
+      gs,
+      minutes,
+      CASE
+        WHEN g IS NOT NULL AND g <> 0
+          THEN ROUND(minutes / CAST(g AS DOUBLE), 1)
+        ELSE NULL
+      END AS minutes_per_game,
+      SUM(minutes) OVER (PARTITION BY season, team_abbr) AS team_minutes
+    FROM base
+  )
+  SELECT
+    a.season,
+    a.team_abbr,
+    a.player_name,
+    a.position,
+    a.g,
+    a.gs,
+    a.minutes,
+    a.minutes_per_game,
+    CASE
+      WHEN a.team_minutes IS NOT NULL AND a.team_minutes <> 0
+        THEN ROUND(100.0 * a.minutes / a.team_minutes, 1)
+      ELSE NULL
+    END AS pct_team_minutes,
+    adv.per,
+    adv.ts_percent,
+    adv.ws,
+    adv.vorp
+  FROM agg a
+  LEFT JOIN postgresql.staging.player_advanced adv
+    ON adv.player_id = a.player_id
+   AND TRY_CAST(adv.season AS INTEGER) = a.season
+  ORDER BY pct_team_minutes DESC NULLS LAST, a.minutes DESC NULLS LAST
+  LIMIT 20
+  """
+          ),
+          sql_gav=(
+              """
+SELECT
+  u.season,
+  u.team_abbr,
+  u.player_name,
+  u.position,
+  u.g,
+  u.gs,
+  u.minutes,
+  CASE
+    WHEN u.g IS NOT NULL AND u.g <> 0
+      THEN ROUND(u.minutes / CAST(u.g AS DOUBLE), 1)
+    ELSE NULL
+  END AS minutes_per_game,
+  ROUND(
+    100.0 * u.minutes / SUM(u.minutes) OVER (PARTITION BY u.season, u.team_abbr),
+    1
+  ) AS pct_team_minutes,
+  gps.per,
+  gps.ts_percent,
+  gps.ws,
+  gps.vorp
+FROM memory.gav.player_play_by_play u
+LEFT JOIN memory.gav.global_player_season gps
+  ON gps.player_id = u.player_id
+ AND gps.season    = u.season
+ AND gps.team_abbr = u.team_abbr
+WHERE u.season    = 2025
+  AND u.team_abbr = 'LAL'
+ORDER BY pct_team_minutes DESC NULLS LAST, u.minutes DESC NULLS LAST
+LIMIT 20
+  """
+          ),
+      ),
+  ]
 
 
 def main():
@@ -1670,7 +1904,7 @@ def main():
     with st.expander("Parameters", expanded=True):
         if "Roster + position" in case.title:
             team = st.text_input("Team abbr", value="LAL").upper()
-            y1, y2 = st.slider("Season range", 1950, 2025, (2019, 2021))
+            y1, y2 = st.slider("Season range", 1961, 2025, (2019, 2021))
             dyn_raw = f"""
 SELECT
   COALESCE(LOWER(cpi.full_name), LOWER(pt.player)) AS player_name,
@@ -1703,8 +1937,9 @@ WHERE team_abbr = '{team}' AND season BETWEEN {y1} AND {y2}
 ORDER BY season DESC, player_name"""
         elif "Team metadata (coach + arena)" in case.title:
             teams_in = st.text_input("Team abbr (list)", value="BOS,LAL")
-            abbr_list = [re.sub(r"[^A-Za-z]", "", t).upper() for t in teams_in.split(',') if t.strip()]
+            abbr_list = [re.sub(r"[^A-Za-z]", "", t).upper() for t in teams_in.split(",") if t.strip()]
             abbrs = ",".join([f"'{t}'" for t in abbr_list]) or "'BOS','LAL'"
+            season_meta = 2022
             dyn_raw = f"""
 SELECT
   TRY_CAST(ts.season AS INTEGER)                                           AS season,
@@ -1716,22 +1951,22 @@ FROM postgresql.staging.team_summaries ts
 LEFT JOIN mongodb.lsdm.team_abbrev ta
   ON TRY_CAST(ta.season AS INTEGER) = TRY_CAST(ts.season AS INTEGER)
  AND UPPER(ta.abbreviation) = UPPER(ts.abbreviation)
-LEFT JOIN mongodb.lsdm.team_details td
-  ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
-LEFT JOIN postgresql.staging.nba_head_coaches nhc
-  ON 2022 BETWEEN TRY_CAST(nhc.start_season_short AS INTEGER)
-              AND TRY_CAST(nhc.end_season_short   AS INTEGER)
- AND REGEXP_LIKE(UPPER(nhc.teams), CONCAT('(^|[,\\s])', UPPER(COALESCE(ts.abbreviation, ta.abbreviation)), '([,\\s]|$)'))
-WHERE COALESCE(ts.abbreviation, ta.abbreviation) IN ({abbrs})
-  AND TRY_CAST(ts.season AS INTEGER) = 2022
-ORDER BY team_abbr"""
+  LEFT JOIN mongodb.lsdm.team_details td
+    ON UPPER(td.abbreviation) = UPPER(COALESCE(ts.abbreviation, ta.abbreviation))
+  LEFT JOIN postgresql.staging.nba_head_coaches nhc
+    ON {int(season_meta)} BETWEEN TRY_CAST(nhc.start_season_short AS INTEGER)
+                AND TRY_CAST(nhc.end_season_short   AS INTEGER)
+   AND REGEXP_LIKE(UPPER(nhc.teams), CONCAT('(^|[,\\s])', UPPER(COALESCE(ts.abbreviation, ta.abbreviation)), '([,\\s]|$)'))
+  WHERE COALESCE(ts.abbreviation, ta.abbreviation) IN ({abbrs})
+    AND TRY_CAST(ts.season AS INTEGER) = {int(season_meta)}
+  ORDER BY team_abbr"""
             dyn_gav = f"""
 SELECT season, team_abbr, team_name, coach, arena_name
 FROM memory.gav.dim_team_season
-WHERE team_abbr IN ({abbrs}) AND season = 2022
+WHERE team_abbr IN ({abbrs}) AND season = {int(season_meta)}
 ORDER BY team_abbr"""
         elif "Triple-doubles per player" in case.title:
-            start, end = st.slider("Season range", 1950, 2025, (2010, 2020))
+            start, end = st.slider("Season range", 1961, 2025, (2010, 2020))
             dyn_raw = f"""
 SELECT LOWER(player_name) AS player_name, COUNT(*) AS triple_doubles
 FROM postgresql.staging.nba_player_box_score_stats_1950_2022
@@ -1750,21 +1985,95 @@ GROUP BY player_name
 ORDER BY triple_doubles DESC"""
         elif "Top 10 PER" in case.title:
             team = st.text_input("Team abbr", value="CLE").upper()
-            season = st.slider("Season", min_value=1950, max_value=2025, value=2016, step=1)
+            season = st.slider("Season", min_value=1961, max_value=2025, value=2016, step=1)
             dyn_gav = f"""
 SELECT player_name, team_abbr, per, ts_percent, ws, vorp
 FROM memory.gav.global_player_season
 WHERE season = {int(season)} AND team_abbr = '{team}'
 ORDER BY per DESC NULLS LAST
 LIMIT 10"""
+        elif "Player usage by team" in case.title:
+            team = st.text_input("Team abbr", value="LAL").upper()
+            season = st.slider("Season", min_value=1997, max_value=2025, value=2025, step=1)
+            dyn_raw = f"""
+  WITH base AS (
+    SELECT
+      TRY_CAST(season AS INTEGER) AS season,
+      UPPER(team)                 AS team_abbr,
+      LOWER(player)               AS player_name,
+      pos                         AS position,
+      g,
+      gs,
+      TRY_CAST(mp AS DOUBLE)      AS minutes
+    FROM postgresql.staging.player_play_by_play
+    WHERE TRY_CAST(season AS INTEGER) = {int(season)}
+      AND UPPER(team) = '{team}'
+  ),
+  agg AS (
+    SELECT
+      season,
+      team_abbr,
+      player_name,
+      position,
+      g,
+      gs,
+      minutes,
+      CASE
+        WHEN g IS NOT NULL AND g <> 0
+          THEN ROUND(minutes / CAST(g AS DOUBLE), 1)
+        ELSE NULL
+      END AS minutes_per_game,
+      SUM(minutes) OVER (PARTITION BY season, team_abbr) AS team_minutes
+    FROM base
+  )
+  SELECT
+    season,
+    team_abbr,
+    player_name,
+    position,
+    g,
+    gs,
+    minutes,
+    minutes_per_game,
+    CASE
+      WHEN team_minutes IS NOT NULL AND team_minutes <> 0
+        THEN ROUND(100.0 * minutes / team_minutes, 1)
+      ELSE NULL
+    END AS pct_team_minutes
+  FROM agg
+  ORDER BY minutes DESC NULLS LAST
+  LIMIT 20"""
+            dyn_gav = f"""
+SELECT
+  u.season,
+  u.team_abbr,
+  u.player_name,
+  u.position,
+  u.g,
+  u.gs,
+  u.minutes,
+  CASE
+    WHEN u.g IS NOT NULL AND u.g <> 0
+      THEN ROUND(u.minutes / CAST(u.g AS DOUBLE), 1)
+    ELSE NULL
+  END AS minutes_per_game,
+  ROUND(
+    100.0 * u.minutes / SUM(u.minutes) OVER (PARTITION BY u.season, u.team_abbr),
+    1
+  ) AS pct_team_minutes
+FROM memory.gav.player_play_by_play u
+WHERE u.season    = {int(season)}
+  AND u.team_abbr = '{team}'
+ORDER BY pct_team_minutes DESC NULLS LAST, u.minutes DESC NULLS LAST
+LIMIT 20"""
         elif "Team advanced stats" in case.title:
-            season = st.slider("Season", min_value=1961, max_value=2025, value=2020, step=1)
+            season = st.slider("Season", min_value=1970, max_value=2025, value=2020, step=1)
             team1 = re.sub(r"[^A-Za-z]", "", st.text_input("Team A", value="LAL")).upper()
             team2 = re.sub(r"[^A-Za-z]", "", st.text_input("Team B", value="BOS")).upper()
             dyn_raw = f"""
-SELECT
-  TRY_CAST(ts.season AS INTEGER) AS season,
-  UPPER(ts.abbreviation) AS team_abbr,
+  SELECT
+    TRY_CAST(ts.season AS INTEGER) AS season,
+    UPPER(ts.abbreviation) AS team_abbr,
   ROUND(ts.o_rtg, 1) AS o_rtg,
   ROUND(ts.d_rtg, 1) AS d_rtg,
   ROUND(ts.n_rtg, 1) AS n_rtg,
@@ -1794,12 +2103,12 @@ SELECT
   ROUND(n_rtg, 1) AS n_rtg,
   ROUND(pace, 1)  AS pace,
   ROUND(COALESCE(points_per_game, (o_rtg * pace)/100.0), 1) AS points_per_game
-FROM memory.gav.global_team_season
-WHERE season = {int(season)}
-  AND team_abbr IN ('{team1}','{team2}')
-ORDER BY team_abbr;"""
+  FROM memory.gav.global_team_season
+  WHERE season = {int(season)}
+    AND team_abbr IN ('{team1}','{team2}')
+  ORDER BY team_abbr;"""
         elif "Most attended games" in case.title:
-            season_g = st.slider("Season", min_value=1946, max_value=2025, value=2025, step=1)
+            season_g = st.slider("Season", min_value=1950, max_value=2025, value=2025, step=1)
 
             dyn_raw = f"""
 SELECT
@@ -1852,7 +2161,7 @@ FROM memory.gav.global_game
 WHERE season = {int(season_g)} AND attendance IS NOT NULL
 ORDER BY attendance DESC"""
         elif "Home attendance vs team strength" in case.title:
-            season_h = st.slider("Season", min_value=1950, max_value=2025, value=2020, step=1)
+            season_h = st.slider("Season", min_value=1961, max_value=2025, value=2020, step=1)
             dyn_raw = f"""
 WITH gg AS (
   SELECT
@@ -1956,6 +2265,110 @@ SELECT season, team_abbr, team_name, attend, attend_g
 FROM memory.gav.global_team_season
 WHERE season = {int(season)}
 ORDER BY attend DESC NULLS LAST"""
+        elif "Player usage by team" in case.title:
+            team = st.text_input("Team abbr", value="LAL").upper()
+            season = st.slider("Season", min_value=1961, max_value=2025, value=2025, step=1)
+            dyn_raw = f"""
+WITH base AS (
+  SELECT
+    TRY_CAST(season AS INTEGER) AS season,
+    UPPER(team)                 AS team_abbr,
+    player_id,
+    LOWER(player)               AS player_name,
+    pos                         AS position,
+    g,
+    gs,
+    TRY_CAST(mp AS DOUBLE)      AS minutes
+  FROM postgresql.staging.player_play_by_play
+  WHERE TRY_CAST(season AS INTEGER) = {int(season)}
+    AND UPPER(team) = '{team}'
+),
+usage AS (
+  SELECT
+    season,
+    team_abbr,
+    player_id,
+    player_name,
+    position,
+    g,
+    gs,
+    minutes,
+    CASE
+      WHEN g IS NOT NULL AND g <> 0
+        THEN ROUND(minutes / CAST(g AS DOUBLE), 1)
+      ELSE NULL
+    END AS minutes_per_game,
+    SUM(minutes) OVER (PARTITION BY season, team_abbr) AS team_minutes
+  FROM base
+),
+adv AS (
+  SELECT
+    TRY_CAST(season AS INTEGER) AS season,
+    UPPER(team)                 AS team_abbr,
+    player_id,
+    per,
+    ts_percent,
+    ws,
+    vorp
+  FROM postgresql.staging.player_advanced
+  WHERE TRY_CAST(season AS INTEGER) = {int(season)}
+)
+SELECT
+  u.season,
+  u.team_abbr,
+  u.player_name,
+  u.position,
+  u.g,
+  u.gs,
+  u.minutes,
+  u.minutes_per_game,
+  CASE
+    WHEN u.team_minutes IS NOT NULL AND u.team_minutes <> 0
+      THEN ROUND(100.0 * u.minutes / u.team_minutes, 1)
+    ELSE NULL
+  END AS pct_team_minutes,
+  adv.per,
+  adv.ts_percent,
+  adv.ws,
+  adv.vorp
+FROM usage u
+LEFT JOIN adv
+  ON adv.player_id = u.player_id
+ AND adv.season    = u.season
+ AND adv.team_abbr = u.team_abbr
+ORDER BY pct_team_minutes DESC NULLS LAST, u.minutes DESC NULLS LAST
+LIMIT 20"""
+            dyn_gav = f"""
+SELECT
+  u.season,
+  u.team_abbr,
+  u.player_name,
+  u.position,
+  u.g,
+  u.gs,
+  u.minutes,
+  CASE
+    WHEN u.g IS NOT NULL AND u.g <> 0
+      THEN ROUND(u.minutes / CAST(u.g AS DOUBLE), 1)
+    ELSE NULL
+  END AS minutes_per_game,
+  ROUND(
+    100.0 * u.minutes / SUM(u.minutes) OVER (PARTITION BY u.season, u.team_abbr),
+    1
+  ) AS pct_team_minutes,
+  gps.per,
+  gps.ts_percent,
+  gps.ws,
+  gps.vorp
+FROM memory.gav.player_play_by_play u
+LEFT JOIN memory.gav.global_player_season gps
+  ON gps.player_id = u.player_id
+ AND gps.season    = u.season
+ AND gps.team_abbr = u.team_abbr
+WHERE u.season    = {int(season)}
+  AND u.team_abbr = '{team}'
+ORDER BY pct_team_minutes DESC NULLS LAST, u.minutes DESC NULLS LAST
+LIMIT 20"""
 
     col1, col2 = st.columns(2)
     with col1:

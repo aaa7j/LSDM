@@ -9,6 +9,11 @@ from pathlib import Path
 
 
 def cat_inputs(inp_dir: str):
+    if os.path.isfile(inp_dir):
+        with open(inp_dir, "r", encoding="utf-8") as f:
+            for line in f:
+                yield line
+        return
     for root, _, files in os.walk(inp_dir):
         for name in files:
             if name.endswith(".tsv") or name.endswith(".jsonl") or name.endswith(".json") or name.startswith("part-"):
@@ -28,6 +33,7 @@ def run_one_phase(mapper: str, reducer: str, inp: str, out: str, env_extra=None)
     map_out = os.path.join(tmp, "map_out.tsv")
     red_out = out
     env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     if env_extra:
         env.update(env_extra)
     try:
@@ -35,32 +41,34 @@ def run_one_phase(mapper: str, reducer: str, inp: str, out: str, env_extra=None)
         input_text = "".join(cat_inputs(inp))
         res_map = subprocess.run(
             [sys.executable, mapper],
-            input=input_text,
+            input=input_text.encode("utf-8"),
             capture_output=True,
-            text=True,
+            text=False,
             env=env,
             check=False,
         )
         if res_map.returncode != 0:
-            raise RuntimeError(f"Mapper failed ({mapper}): {res_map.stderr[:500]}")
+            err_txt = (res_map.stderr or b"")[:500].decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Mapper failed ({mapper}): {err_txt}")
         with open(map_out, "w", encoding="utf-8") as f:
-            f.write(res_map.stdout)
+            f.write(res_map.stdout.decode("utf-8", errors="ignore"))
 
         # 2) Ordina e passa al reducer
         with open(map_out, "r", encoding="utf-8") as f:
             sorted_lines = sorted([ln for ln in f if ln.strip()])
         res_red = subprocess.run(
             [sys.executable, reducer],
-            input="".join(sorted_lines),
+            input="".join(sorted_lines).encode("utf-8"),
             capture_output=True,
-            text=True,
+            text=False,
             env=env,
             check=False,
         )
         if res_red.returncode != 0:
-            raise RuntimeError(f"Reducer failed ({reducer}): {res_red.stderr[:500]}")
+            err_txt = (res_red.stderr or b"")[:500].decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Reducer failed ({reducer}): {err_txt}")
         with open(red_out, "w", encoding="utf-8") as f:
-            f.write(res_red.stdout)
+            f.write(res_red.stdout.decode("utf-8", errors="ignore"))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

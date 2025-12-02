@@ -1,6 +1,6 @@
 param(
   [int]$TopN = 3,
-  [ValidateSet('all','q1','q2','q3')][string]$Only = 'all',
+  [ValidateSet('all','q1','q2','q3','q4')][string]$Only = 'all',
   $Reuse = $true
 )
 
@@ -18,13 +18,34 @@ try {
 
 $ErrorActionPreference = "Stop"
 
-New-Item -ItemType Directory -Force -Path outputs/spark/q1, outputs/spark/q2, outputs/spark/q3, outputs/spark_tsv/q1, outputs/spark_tsv/q2, outputs/spark_tsv/q3 | Out-Null
+New-Item -ItemType Directory -Force -Path outputs/spark/q1, outputs/spark/q2, outputs/spark/q3, outputs/spark/q4, outputs/spark_tsv/q1, outputs/spark_tsv/q2, outputs/spark_tsv/q3, outputs/spark_tsv/q4 | Out-Null
+
+# Build enriched TSV for Q4 (used by Spark export and Hadoop for fairness)
+function Resolve-HostPython {
+  if (Test-Path ".venv\Scripts\python.exe") { return (Resolve-Path ".venv\Scripts\python.exe").Path }
+  if (Get-Command python -ErrorAction SilentlyContinue) { return 'python' }
+  if (Get-Command python3 -ErrorAction SilentlyContinue) { return 'python3' }
+  if (Get-Command py -ErrorAction SilentlyContinue) { return 'py -3' }
+  return $null
+}
+
+$PY = Resolve-HostPython
+if ($PY) {
+  & $PY bigdata/hadoop/prep/build_q4_multifactor.py --play data/_player_play_by_play_staging.csv --per-game "data/Player Per Game.csv" --advanced data/Advanced.csv --team-totals "data/Team Totals.csv" --out warehouse/bigdata/q4_multifactor.tsv
+}
 
 # Use spark-submit inside the Spark master container, targeting the cluster master
+# Allow overriding master (e.g., local[*]) via env var to bypass cluster scheduling issues.
+$masterUri = $env:SPARK_MASTER_URI
+if (-not $masterUri -or [string]::IsNullOrWhiteSpace($masterUri)) {
+  # Default to local[*] to avoid “Initial job has not accepted any resources” if the worker is constrained.
+  $masterUri = "local[*]"
+}
+
 function SparkSubmit([string]$script, [string[]]$scriptArgs) {
   # Use a param name that doesn't shadow PowerShell's automatic $args variable
   $joined = $scriptArgs -join ' '
-  $cmd = "/opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.sql.adaptive.enabled=true /workspace/$script $joined"
+  $cmd = "/opt/spark/bin/spark-submit --master $masterUri --conf spark.sql.adaptive.enabled=true --conf spark.driver.memory=1g --conf spark.executor.memory=1g --conf spark.executor.cores=1 /workspace/$script $joined"
   docker exec spark-master bash -lc $cmd
 }
 
@@ -55,6 +76,7 @@ SELECT $cols FROM v_$q;
 
 if ($Only -ne 'q2') {
   # Prepare parquet warehouse using Spark (needed for q1/q3)
+  docker exec spark-master bash -lc "rm -rf /workspace/warehouse/bigdata/team_game_points /workspace/warehouse/bigdata/team_game_points_tsv" 2>$null
   if ($Reuse -and (Test-Path 'outputs/spark/q1') -and (Test-Path 'outputs/spark/q2') -and (Test-Path 'outputs/spark/q3')) {
     Write-Host "[spark] Reuse ON: skipping prepare (outputs/spark/q{1,2,3} present)" -ForegroundColor DarkYellow
   } else {
@@ -99,4 +121,13 @@ if ($Only -eq 'all' -or $Only -eq 'q3') {
   ExportSparkTSV -q 'q3' -cols 'team_id, season, game_id, points'
 }
 
-Write-Host "Done. Spark outputs in outputs/spark/q{1,2,3}" -ForegroundColor Green
+if ($Only -eq 'all' -or $Only -eq 'q4') {
+  if ($Reuse -and (Test-Path 'outputs/spark/q4')) {
+    Write-Host "[spark] Reuse ON: skipping q4 compute (outputs/spark/q4 present)" -ForegroundColor DarkYellow
+  } else {
+    SparkSubmit "bigdata/spark/q4_playbyplay_usage.py" @("--input","/workspace/warehouse/bigdata/q4_multifactor.tsv","--out","/workspace/outputs/spark/q4")
+  }
+  ExportSparkTSV -q 'q4' -cols 'season, team_abbr, player_name, pos, g, gs, mp, minutes_per_game, usage_pct, ts_percent, pts_per_36, team_minutes_share, team_pts_share, score, rank'
+}
+
+Write-Host "Done. Spark outputs in outputs/spark/q{1,2,3,4}" -ForegroundColor Green

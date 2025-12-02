@@ -86,8 +86,21 @@ erDiagram
     PK      (game_id, player_id)
   }
 
+  PLAYER_PLAY_BY_PLAY {
+    int     season
+    string  player_id
+    string  team_abbr
+    string  player_name
+    string  position
+    int     g
+    int     gs
+    float   minutes
+    PK      (player_id, season, team_abbr)
+  }
+
   %% Relationships between GAV entities
-  GLOBAL_PLAYER_SEASON }o--|| GLOBAL_TEAM_SEASON : "season, team_abbr"
-  GLOBAL_GAME }o--|| GLOBAL_TEAM_SEASON : "season, home/away_team_abbr"
-  GLOBAL_GAME ||--o{ PLAYER_GAME_BOX : "game_id"
-  GLOBAL_PLAYER_SEASON ||--o{ PLAYER_GAME_BOX : "player_id, season"
+  GLOBAL_TEAM_SEASON    ||--o{ GLOBAL_GAME        : "season, home/away_team_abbr"
+  GLOBAL_GAME           ||--o{ PLAYER_GAME_BOX    : "game_id"
+  GLOBAL_PLAYER_SEASON  ||--o{ PLAYER_GAME_BOX    : "player_id, season"
+  PLAYER_PLAY_BY_PLAY   }o--|| GLOBAL_PLAYER_SEASON : "player_id, season, team_abbr"
+  PLAYER_PLAY_BY_PLAY   }o--|| GLOBAL_TEAM_SEASON   : "season, team_abbr"

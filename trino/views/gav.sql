@@ -546,3 +546,16 @@ SELECT
   TRY_CAST(plus_minus AS DOUBLE) AS plus_minus
 FROM postgresql.staging.nba_player_box_score_stats_1950_2022;
 
+-- Player season usage from play-by-play stats (one row per player/team/season)
+CREATE OR REPLACE VIEW memory.gav.player_play_by_play AS
+SELECT
+  TRY_CAST(season AS INTEGER)        AS season,
+  LOWER(player)                      AS player_name,
+  player_id,
+  UPPER(team)                        AS team_abbr,
+  pos                                AS position,
+  g,
+  gs,
+  TRY_CAST(mp AS DOUBLE)            AS minutes
+FROM postgresql.staging.player_play_by_play;
+

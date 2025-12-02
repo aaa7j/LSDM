@@ -34,10 +34,11 @@ function Write-JsonRows {
   }
 }
 
-# Hadoop outputs -> web/data/q{1,2,3}.json
+# Hadoop outputs -> web/data/q{1,2,3,4}.json
 if (Test-Path 'outputs/hadoop/q1.tsv') { Write-Host 'Converting outputs/hadoop/q1.tsv -> web/data/q1.json'; Write-JsonRows -InputPath 'outputs/hadoop/q1.tsv' -OutPath 'web/data/q1.json' }
 if (Test-Path 'outputs/hadoop/q2.tsv') { Write-Host 'Converting outputs/hadoop/q2.tsv -> web/data/q2.json'; Write-JsonRows -InputPath 'outputs/hadoop/q2.tsv' -OutPath 'web/data/q2.json' }
 if (Test-Path 'outputs/hadoop/q3.tsv') { Write-Host 'Converting outputs/hadoop/q3.tsv -> web/data/q3.json'; Write-JsonRows -InputPath 'outputs/hadoop/q3.tsv' -OutPath 'web/data/q3.json' }
+if (Test-Path 'outputs/hadoop/q4.tsv') { Write-Host 'Converting outputs/hadoop/q4.tsv -> web/data/q4.json'; Write-JsonRows -InputPath 'outputs/hadoop/q4.tsv' -OutPath 'web/data/q4.json' }
 
 # Spark TSV exports -> web/data/spark_q{1,2,3}.json
 function FirstFileIn([string]$dir) {
@@ -57,5 +58,8 @@ if ($sq2) { Write-Host "Converting $sq2 -> web/data/spark_q2.json"; Write-JsonRo
 
 $sq3 = FirstFileIn 'outputs/spark_tsv/q3'
 if ($sq3) { Write-Host "Converting $sq3 -> web/data/spark_q3.json"; Write-JsonRows -InputPath $sq3 -OutPath 'web/data/spark_q3.json' }
+
+$sq4 = FirstFileIn 'outputs/spark_tsv/q4'
+if ($sq4) { Write-Host "Converting $sq4 -> web/data/spark_q4.json"; Write-JsonRows -InputPath $sq4 -OutPath 'web/data/spark_q4.json' }
 
 Write-Host 'Done generating web data JSON.' -ForegroundColor Green
