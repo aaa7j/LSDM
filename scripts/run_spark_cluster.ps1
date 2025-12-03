@@ -45,7 +45,7 @@ if (-not $masterUri -or [string]::IsNullOrWhiteSpace($masterUri)) {
 function SparkSubmit([string]$script, [string[]]$scriptArgs) {
   # Use a param name that doesn't shadow PowerShell's automatic $args variable
   $joined = $scriptArgs -join ' '
-  $cmd = "/opt/spark/bin/spark-submit --master $masterUri --conf spark.sql.adaptive.enabled=true --conf spark.driver.memory=1g --conf spark.executor.memory=1g --conf spark.executor.cores=1 /workspace/$script $joined"
+  $cmd = "/opt/spark/bin/spark-submit --master $masterUri --conf spark.sql.adaptive.enabled=true --conf spark.driver.memory=4g --conf spark.executor.memory=4g --conf spark.executor.cores=4 /workspace/$script $joined"
   docker exec spark-master bash -lc $cmd
 }
 

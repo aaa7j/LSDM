@@ -7,15 +7,16 @@ from pyspark.sql import types as T
 
 
 def build_spark(app_name: str = "Q2HighScoringShare"):
-    parts = max(2, (os.cpu_count() or 4) * 2)
-    mem_driver = os.environ.get("SPARK_DRIVER_MEMORY", "4g")
-    mem_exec = os.environ.get("SPARK_EXECUTOR_MEMORY", mem_driver)
+    master = os.environ.get("SPARK_MASTER_URI", "local[2]")
     builder = (
         SparkSession.builder.appName(app_name)
+        .master(master)
+        .config("spark.executor.memory", os.environ.get("SPARK_EXECUTOR_MEMORY", "2g"))
+        .config("spark.driver.memory", os.environ.get("SPARK_DRIVER_MEMORY", "2g"))
+        .config("spark.sql.shuffle.partitions", os.environ.get("SPARK_SQL_SHUFFLE_PARTITIONS", "4"))
         .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.shuffle.partitions", str(parts))
-        .config("spark.driver.memory", mem_driver)
-        .config("spark.executor.memory", mem_exec)
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
     )
     return builder.getOrCreate()
 

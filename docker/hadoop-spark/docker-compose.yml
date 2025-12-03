@@ -85,6 +85,7 @@ services:
     container_name: spark-master
     # Start Spark master explicitly (apache/spark image requires explicit command)
     command: "/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077"
+    mem_limit: 8g
     ports:
       - "7077:7077"
       - "8090:8080"   # Spark master web UI (map to 8090 on host to avoid conflict)
@@ -97,9 +98,10 @@ services:
     image: apache/spark:3.4.1
     container_name: spark-worker
     # Start Spark worker and point it to the master
-    command: "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores 2 --memory 2g"
+    command: "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores 4 --memory 8g"
     depends_on:
       - spark-master
+    mem_limit: 8g
     networks:
       - hadoop
     volumes:
