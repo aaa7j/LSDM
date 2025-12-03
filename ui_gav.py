@@ -831,47 +831,43 @@ def render_hadoop_spark_page():
     col_h, col_s = st.columns(2)
     if q == "q1":
         with col_h:
-            st.markdown("**Hadoop Streaming (CLI + Python)**")
+            st.markdown("**Hadoop Streaming (CLI + mapper/reducer)**")
             st.code(
                 """# Esecuzione (semplificata)
 hadoop jar hadoop-streaming.jar \\
   -input team_game_points.tsv \\
   -output outputs/hadoop/q1 \\
-  -mapper  \"python mapper_q1_agg.py\" \\
-  -reducer \"python reducer_q1_agg.py\"
+  -mapper  "python mapper_q1_agg.py" \\
+  -reducer "python reducer_q1_agg.py"
 
-# mapper_q1_agg.py
-import sys
-
+# mapper_q1_agg.py (estratto)
 for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
     season, team_id, points = line.split("\\t")[:3]
     key = season + "|" + team_id
-    print(f"{key}\\t{int(points)}")
+    print(key + "\\t" + points)
 
-# reducer_q1_agg.py (schema)
-import sys
-
-current_key = None
-total = 0
-count = 0
+# reducer_q1_agg.py (estratto)
+cur_key, s, c = None, 0, 0
 for line in sys.stdin:
-    key, points = line.split("\\t")
-    if key != current_key and current_key is not None:
-        season, team_id = current_key.split("|", 1)
-        avg = total / count if count else 0
-        print(f"{season}\\t{team_id}\\t{total}\\t{avg}\\t{count}")
-        total = 0
-        count = 0
-    current_key = key
-    total += int(points)
-    count += 1
+    key, points = line.strip().split("\\t")
+    if cur_key is not None and key != cur_key:
+        season, team_id = cur_key.split("|", 1)
+        avg = (s / c) if c else 0
+        print("\\t".join([season, team_id, str(s), f\"{avg:.1f}\", str(c)]))
+        s, c = 0, 0
+    cur_key = key
+    s += int(points); c += 1
 """,
                 language="python",
             )
         with col_s:
             st.markdown("**PySpark (DataFrame API)**")
             st.code(
-                """points = spark.read.parquet("team_game_points")
+                """# read_points_tsv: helper che legge i TSV con schema esplicito
+points = read_points_tsv(spark, "warehouse/bigdata/team_game_points_tsv")
+
 agg = (
     points.groupBy("season", "team_id")
     .agg(
@@ -886,29 +882,52 @@ agg = (
             )
     elif q == "q2":
         with col_h:
-            st.markdown("**Hadoop Streaming (Python)**")
+            st.markdown("**Hadoop Streaming (CLI + mapper/reducer)**")
             st.code(
-                """# mapper_q2_join.py
+                """# Esecuzione (semplificata)
+hadoop jar hadoop-streaming.jar \\
+  -input team_game_points.tsv \\
+  -output outputs/hadoop/q2 \\
+  -mapper  "python mapper_q2_join.py" \\
+  -reducer "python reducer_q2_join.py"
+
+# mapper_q2_join.py (estratto)
 thr = int(os.environ.get("Q2_THRESHOLD", "120"))
 for line in sys.stdin:
-    season, team_id, points = line.split("\t")[:3]
+    line = line.strip()
+    if not line: continue
+    season, team_id, points = line.split("\\t")[:3]
     key = season + "|" + team_id
-    print(f"{key}\tT\t1")
+    print("\\t".join([key, "T", "1"]))  # total game
     if int(points) >= thr:
-        print(f"{key}\tH\t1")
+        print("\\t".join([key, "H", "1"]))  # high-scoring game
 
-# reducer_q2_join.py
+# reducer_q2_join.py (estratto)
+def flush(key, totals):
+    season, team_id = key.split("|", 1)
+    high = totals.get("H", 0); tot = totals.get("T", 0)
+    pct = (float(high) / tot) if tot else 0.0
+    print("\\t".join([season, team_id, "", str(high), str(tot), f\"{pct:.3f}\"]))
+
+cur_key, sums = None, {"H": 0, "T": 0}
 for line in sys.stdin:
-    key, tag, val = line.split("\t")
-    # accumulate H and T per key and emit pct_high
+    key, tag, val = line.strip().split("\\t")
+    if cur_key is not None and key != cur_key:
+        flush(cur_key, sums); sums = {"H": 0, "T": 0}
+    cur_key = key
+    if tag in ("H", "T"):
+        sums[tag] = sums.get(tag, 0) + int(val)
+flush(cur_key, sums)
 """,
                 language="python",
             )
         with col_s:
             st.markdown("**PySpark (DataFrame API)**")
             st.code(
-                """points = spark.read.parquet("team_game_points")
-teams  = spark.read.parquet("teams_dim")
+                """# Helpers: read_points_tsv / read_teams_tsv leggono i TSV con schema
+points = read_points_tsv(spark, "warehouse/bigdata/team_game_points_tsv")
+teams  = read_teams_tsv(spark, "warehouse/bigdata/teams_dim_tsv")
+
 hs = points.select(
     "season",
     "team_id",
@@ -928,25 +947,47 @@ joined = (
             )
     elif q == "q3":
         with col_h:
-            st.markdown("**Hadoop Streaming (Python)**")
+            st.markdown("**Hadoop Streaming (CLI + mapper/reducer)**")
             st.code(
-                """# mapper_q3_topn.py
-for line in sys.stdin:
-    season, team_id, points, game_id = line.split("\t")[:4]
-    print("\t".join([team_id, points, season, game_id]))
+                """# Esecuzione (semplificata)
+hadoop jar hadoop-streaming.jar \\
+  -input team_game_points.tsv \\
+  -output outputs/hadoop/q3 \\
+  -mapper  "python mapper_q3_topn.py" \\
+  -reducer "python reducer_q3_topn.py"
 
-# reducer_q3_topn.py
-topn = int(os.environ.get("TOPN", "3"))
+# mapper_q3_topn.py (estratto)
 for line in sys.stdin:
-    team_id, points, season, game_id = line.split("\t")[:4]
-    # maintain a small heap per team_id and emit top-N
+    line = line.strip()
+    if not line: continue
+    season, team_id, points, game_id = line.split("\\t")[:4]
+    print("\\t".join([team_id, points, season, game_id]))
+
+# reducer_q3_topn.py (estratto)
+topn = int(os.environ.get("TOPN", "3"))
+cur_team, heap = None, []
+for line in sys.stdin:
+    team_id, points, season, game_id = line.strip().split("\\t")[:4]
+    points = int(points)
+    if cur_team is None:
+        cur_team = team_id
+    if team_id != cur_team:
+        for p, s, g in sorted(heap, key=lambda x: (-x[0], x[2])):
+            print("\\t".join([cur_team, s, g, str(p)]))
+        cur_team, heap = team_id, []
+    if len(heap) < topn:
+        heapq.heappush(heap, (points, season, game_id))
+    elif points > heap[0][0]:
+        heapq.heapreplace(heap, (points, season, game_id))
 """,
                 language="python",
             )
         with col_s:
             st.markdown("**PySpark (DataFrame API)**")
             st.code(
-                """points = spark.read.parquet("team_game_points")
+                """# read_points_tsv: helper che legge i TSV con schema esplicito
+points = read_points_tsv(spark, "warehouse/bigdata/team_game_points_tsv")
+
 w = Window.partitionBy("team_id").orderBy(F.col("points").desc(), F.col("game_id"))
 top = (
     points.withColumn("rn", F.row_number().over(w))
@@ -957,21 +998,36 @@ top = (
             )
     elif q == "q4":
         with col_h:
-            st.markdown("**Hadoop Streaming (Python)**")
+            st.markdown("**Hadoop Streaming (CLI + mapper/reducer)**")
             st.code(
-                """# mapper_q4_playbyplay_usage.py
-# Input TSV (play-by-play + per-game + advanced + team totals)
-# season,team,player_id,player_name,pos,g,gs,mp,usage_pct,ts_percent,pts_per_36,team_pts,...
-print(f"{season}|{team}\\t{player_id}\\t{player_name}\\t{pos}\\t{g}\\t{gs}\\t{mp}\\t{usage_pct}\\t{ts}\\t{pts36}\\t{team_pts}")
+                """# Esecuzione (semplificata)
+hadoop jar hadoop-streaming.jar \\
+  -input warehouse/bigdata/q4_multifactor.tsv \\
+  -output outputs/hadoop/q4 \\
+  -mapper  "python mapper_q4_playbyplay_usage.py" \\
+  -reducer "python reducer_q4_playbyplay_usage.py"
 
-# reducer_q4_playbyplay_usage.py
-# Per (season|team):
-#   total_minutes = sum(mp)
-#   minutes_share = 100*mp/total_minutes
-#   est_points = pts_per_36 * mp / 36
-#   pts_share = 100*est_points/team_pts
-#   score = 0.45*(minutes_share/100) + 0.20*(usage/35) + 0.20*ts + 0.15*(pts36/40)
-#   emit top 15 by score""",
+# mapper_q4_playbyplay_usage.py (estratto)
+for line in sys.stdin:
+    parts = line.strip().split("\\t")
+    season, team = parts[0], parts[1]
+    player_id, player_name, pos = parts[2], parts[3], parts[4]
+    g, gs, mp = parts[5], parts[6], parts[7]
+    usage_pct, ts_percent, pts_per_36, team_pts = parts[8], parts[9], parts[10], parts[11]
+    key = f"{season}|{team}"
+    print("\\t".join([key, player_id, player_name, pos, g, gs, mp, usage_pct, ts_percent, pts_per_36, team_pts]))
+
+# reducer_q4_playbyplay_usage.py (estratto)
+total_minutes = sum(r[5] for r in rows)
+for player_id, player_name, pos, g, gs, mp, usage, ts, pts36, tp, ws, vorp in rows:
+    minutes_per_game = mp / g if g else 0.0
+    pct_team_minutes = 100.0 * mp / total_minutes if total_minutes else 0.0
+    est_pts = (pts36 * mp / 36.0) if pts36 is not None else None
+    pct_team_pts = 100.0 * est_pts / tp if est_pts is not None and tp else 0.0
+    # ... calcolo score_core con usage/TS%/PTS36/ws/vorp ...
+    # score = score_core * minutes_games_factor
+    # ordina per score e emetti top 15 giocatori per (season, team)
+""",
                 language="python",
             )
         with col_s:

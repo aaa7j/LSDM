@@ -97,7 +97,7 @@ if ($Only -eq 'all' -or $Only -eq 'q1') {
   if ($Reuse -and (Test-Path 'outputs/spark/q1')) {
     Write-Host "[spark] Reuse ON: skipping q1 compute (outputs/spark/q1 present)" -ForegroundColor DarkYellow
   } else {
-    SparkSubmit "bigdata/spark/q1_agg_points.py" @("--warehouse","/workspace/warehouse","--out","/workspace/outputs/spark/q1")
+    SparkSubmit "bigdata/spark/q1_agg_points.py" @("--warehouse","/workspace/warehouse","--out","/workspace/outputs/spark/q1","--fmt","tsv")
   }
   ExportSparkTSV -q 'q1' -cols 'season, team_id, total_points, avg_points, games'
 }
@@ -106,7 +106,7 @@ if ($Only -eq 'all' -or $Only -eq 'q2') {
   if ($Reuse -and (Test-Path 'outputs/spark/q2')) {
     Write-Host "[spark] Reuse ON: skipping q2 compute (outputs/spark/q2 present)" -ForegroundColor DarkYellow
   } else {
-    SparkSubmit "bigdata/spark/q2_join_teamname.py" @("--warehouse","/workspace/warehouse","--out","/workspace/outputs/spark/q2")
+    SparkSubmit "bigdata/spark/q2_join_teamname.py" @("--warehouse","/workspace/warehouse","--out","/workspace/outputs/spark/q2","--fmt","tsv")
   }
   ExportSparkTSV -q 'q2' -cols 'season, team_id, team_name, high_games, total_games, pct_high'
 }
@@ -116,7 +116,7 @@ if ($Only -eq 'all' -or $Only -eq 'q3') {
   if ($Reuse -and (Test-Path 'outputs/spark/q3')) {
     Write-Host "[spark] Reuse ON: reusing existing q3 parquet; exporting TSV view" -ForegroundColor DarkYellow
   } else {
-    SparkSubmit "bigdata/spark/q3_topn_games.py" @("--warehouse","/workspace/warehouse","--out","/workspace/outputs/spark/q3","--topn","$TopN")
+    SparkSubmit "bigdata/spark/q3_topn_games.py" @("--warehouse","/workspace/warehouse","--out","/workspace/outputs/spark/q3","--topn","$TopN","--fmt","tsv")
   }
   ExportSparkTSV -q 'q3' -cols 'team_id, season, game_id, points'
 }
